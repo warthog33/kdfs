@@ -1,0 +1,48 @@
+[package]
+name = "kdfs"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+all = ["rustcrypto-sha1", "rustcrypto-sha2", "rustcrypto-cshake", "rustcrypto-hmac", "rustcrypto-cmac", "rustcrypto-aes", "rustcrypto-sm3", "rustcrypto-ctr", "rustcrypto-cbc", "rustcrypto-salsa20", "rustcrypto-des"]
+
+rustcrypto-sha1 = ["dep:sha1"]
+rustcrypto-sha2 = ["dep:sha2"]
+rustcrypto-hmac = ["dep:hmac"]
+rustcrypto-cmac = ["dep:cmac"]
+rustcrypto-aes  = ["dep:aes"]
+rustcrypto-sm3  = ["dep:sm3"]
+rustcrypto-ctr  = ["dep:ctr"]
+rustcrypto-cbc  = ["dep:cbc"]
+rustcrypto-des  = ["dep:des"]
+rustcrypto-cshake = ["dep:shake", "dep:cshake"]
+rustcrypto-salsa20 = ["dep:salsa20"]
+
+[dependencies]
+hybrid-array = { version = "0.4.11"}
+crypto-common = { version = "0.2.1"}
+aead =   { version="0.6.0-rc.10", features = ["alloc"]}
+cipher = { version = "0.5.1", features = ["block-padding", "alloc"]  }
+digest = { version="0.11.3", features = ["mac"]}
+
+num-traits = "0.2.17"
+sha1 = { version = "0.11.0", optional = true }
+sha2 = { version = "0.11.0", optional = true }
+sha3 = { version = "0.12.0", optional = true }
+shake = { version = "0.1.0", optional = true }
+cshake = { version = "0.2.1", optional = true }
+tiny-keccak = { version = "2.0.2", features = ["kmac"]}
+
+sm3 = { version = "0.5.0", optional = true }
+aes  =  { version = "0.9.0", optional = true }
+des  = { version = "0.9.0", optional = true }
+cbc  = { version = "0.2.0", optional = true }
+hmac = {version = "0.13.0", optional = true}
+cmac = { version = "0.8.0", optional = true }
+ctr  = { version = "0.10.0", optional = true }
+salsa20 = { version = "0.11.0", optional = true}
+
+
+[dev-dependencies]
+kdfs = { path = ".", features = ["all"]}
+hex-literal = "0.4.1"
