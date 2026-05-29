@@ -299,8 +299,8 @@ impl<X: ExtendableOutput + Default> Kdf for X
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), crate::Error> {
         let mut hasher = X::default();
-        secret.into_iter().for_each (|v|hasher.update(v));
-        other_data.into_iter().for_each(|v|hasher.update(v));
+        secret.into_iter().for_each (|v|{ println!("secret={v:02X?}"); hasher.update(v)});
+        other_data.into_iter().for_each(|v|{ println!("other={v:02X?}");hasher.update(v)});
         hasher.finalize_xof().read(out);
         Ok(())
     }
