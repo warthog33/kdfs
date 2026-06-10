@@ -6,13 +6,19 @@ use digest::consts::*;
 use hex_literal::hex;
 use hmac::HmacReset;
 use hybrid_array::Array;
-use kdfs::Kdf;
+use kdfs::{Kdf, InitSalt, iso18033_2, u0};
+
+use kdfs::ansi_x9_42::X942Asn1Kdf;
+use kdfs::ansi_x9_63::{X963KdfSha1,X963KdfSha256};
+use kdfs::emv::EmvCommonSessionKdf;
 use kdfs::iso11770_6::*;
-use kdfs::misc::Kmac128Kdf;
-use kdfs::misc::Kmac256Kdf;
-use kdfs::rfc5869_hkdf::Hkdf;
-use kdfs::misc::StreamCipherKdf;
-use kdfs::*;
+use kdfs::misc::{Kmac128Kdf,Kmac256Kdf,StreamCipherKdf};
+use kdfs::nistsp800_56::{SskdfHash, SskdfMac};
+use kdfs::nistsp800_108::{NistKdfDblPipeline, NistKdfFeedbackModeNoCounter, NistKdfFeedbackModeWithCounter};
+use kdfs::rfc4253_ssh::SshKdf;
+use kdfs::rfc5246_tls::Tls1Prf;
+use kdfs::rfc5869_hkdf::{Hkdf,HkdfExpand,HkdfExtract};
+
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512, Sha224};
 
@@ -29,20 +35,10 @@ fn test_case_1_5869 () {
     let prk  = hex!("077709362c2e32df0ddc3f0dc47bba63 90b6c73bb50f9c3122ec844ad7c2b3e5");// (32 octets)
     let okm  = hex! ( "3cb25f25faacd57a90434f64d0362f2a 2d2d0a90cf1a5a4c5db02d56ecc4c5bf 34007208d5b887185865");// (42 octets)
 
-    //let prk_calc = HmacKdf::<sha2::Sha256>::extract (&salt, &ikm);
-    //let prk_calc = MacKdfExtract::<Hmac<sha2::Sha256>>::derive(&salt, &ikm);
-    //let prk_calc = MacKdfExtract::<Hmac<sha2::Sha256>>::derive_with_salt2(&ikm, &salt, &[]);
-
-    //let h = HmacReset::<sha2::Sha256>::new(&Array::default());
-    //h.finalize_into_reset();
-    let prk_calc = kdfs::rfc5869_hkdf::HkdfExtract::<HmacReset<sha2::Sha256>>::derive_salt_secret::<U32>(&salt, &ikm).unwrap();
-
+    let prk_calc = HkdfExtract::<HmacReset<Sha256>>::derive_salt_secret::<U32>(&salt, &ikm).unwrap();
     assert! ( prk_calc == Array::from(prk));
 
-    //let okm_calc = HmacKdf::<sha2::Sha256>::expand::<U42>(&prk, &info);
-    //let okm_calc = rfc5869_hkdf::HkdfExpand::<Hmac<sha2::Sha256>>::derive_secret_other_variable::<U42>(&prk, &info);
-    let okm_calc = kdfs::rfc5869_hkdf::HkdfExpand::<HmacReset<sha2::Sha256>>::derive_secret_other::<U42>(&prk, &info).unwrap();
-    //assert! ( okm_calc.to_vec() == okm );
+    let okm_calc = HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U42>(&prk, &info).unwrap();
     assert! ( okm_calc == Array::from(okm) );
 }
 
@@ -81,13 +77,13 @@ fn test_case_2_5869 () {
           1d87");// (82 octets)
     
     //let prk_calc = HmacKdf::<sha2::Sha256>::extract (&salt, &ikm);
-    let prk_calc = rfc5869_hkdf::HkdfExtract::<HmacReset<sha2::Sha256>>::derive_salt_secret::<U32>(&salt, &ikm).unwrap();
+    let prk_calc = HkdfExtract::<HmacReset<Sha256>>::derive_salt_secret::<U32>(&salt, &ikm).unwrap();
     //let prk_calc = MacKdfExtract::<Hmac<sha2::Sha256>>::derive_with_salt2(&ikm, &salt, &[]);
     
     assert! ( prk_calc == prk);
 
     //let okm_calc = HmacKdf::<sha2::Sha256>::expand::<U82>(&prk, &info);
-    let okm_calc = rfc5869_hkdf::HkdfExpand::<HmacReset<sha2::Sha256>/* ,U82*/>::derive_secret_other::<U82>(&prk, &info).unwrap();
+    let okm_calc = HkdfExpand::<HmacReset<Sha256>/* ,U82*/>::derive_secret_other::<U82>(&prk, &info).unwrap();
     assert! ( okm_calc == okm );
 }
 
@@ -108,7 +104,7 @@ fn test_case_3_5869()
     //let prk_calc = HmacKdf::<sha2::Sha256>::extract (&salt, &ikm);
     //let prk_calc = MacKdfExtract::<Hmac<sha2::Sha256>>::derive(&salt, &ikm);
     //let prk_calc = MacKdfExtract::<Hmac<sha2::Sha256>>::derive_with_salt2(&ikm, &salt, &[]) ;
-    let prk_calc = rfc5869_hkdf::HkdfExtract::<HmacReset<sha2::Sha256>>::derive_salt_secret::<U32>(&salt, &ikm).unwrap();
+    let prk_calc = HkdfExtract::<HmacReset<Sha256>>::derive_salt_secret::<U32>(&salt, &ikm).unwrap();
     
     assert! ( prk_calc == prk);
 
@@ -116,7 +112,7 @@ fn test_case_3_5869()
     //assert! ( prk_calc2.to_vec() == prk );
     
     //let okm_calc = HmacKdf::<sha2::Sha256>::expand::<U42>(&prk, &info);
-    let okm_calc = rfc5869_hkdf::HkdfExpand::<HmacReset<sha2::Sha256>>::derive_secret_other::<U42>(&prk, &info).unwrap();
+    let okm_calc = HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U42>(&prk, &info).unwrap();
     assert! ( okm_calc == okm );
 }
 
@@ -137,13 +133,13 @@ fn test_case_4_5869()
        c22e422478d305f3f896" );// (42 octets)
 
     //let prk_calc = HmacKdf::<sha1::Sha1>::extract (&salt, &ikm);
-    let prk_calc = rfc5869_hkdf::HkdfExtract::<HmacReset<Sha1>>::derive_salt_secret::<U20>(&salt, &ikm).unwrap();
+    let prk_calc = HkdfExtract::<HmacReset<Sha1>>::derive_salt_secret::<U20>(&salt, &ikm).unwrap();
     //let prk_calc = HkdfSha1Extract::derive_with_salt2(&ikm, &salt, &[]);
     
     assert! ( prk_calc == prk);
 
     //let okm_calc = HmacKdf::<sha1::Sha1>::expand::<U42>(&prk, &info);
-    let okm_calc = rfc5869_hkdf::HkdfExpand::<HmacReset<sha1::Sha1>>::derive_secret_other::<U42>(&prk, &info).unwrap();
+    let okm_calc = HkdfExpand::<HmacReset<Sha1>>::derive_secret_other::<U42>(&prk, &info).unwrap();
     assert! ( okm_calc == okm );
 }
 
@@ -180,13 +176,13 @@ fn test_case_5_ ()
        d3b4");// (82 octets)
 
     //let prk_calc = HmacKdf::<sha1::Sha1>::extract (&salt, &ikm);
-    let prk_calc = rfc5869_hkdf::HkdfExtract::<HmacReset<Sha1>>::derive_salt_secret::<U20>(&salt, &ikm).unwrap();
+    let prk_calc = HkdfExtract::<HmacReset<Sha1>>::derive_salt_secret::<U20>(&salt, &ikm).unwrap();
     //let prk_calc = HkdfSha1Extract::derive_with_salt2(&ikm, &salt, &[]);
     
     assert! ( prk_calc == prk);
 
     //let okm_calc = HmacKdf::<sha1::Sha1>::expand::<U82>(&prk, &info);
-    let okm_calc = rfc5869_hkdf::HkdfExpand::<HmacReset<sha1::Sha1>>::derive_secret_other::<U82>(&prk, &info).unwrap();
+    let okm_calc = HkdfExpand::<HmacReset<Sha1>>::derive_secret_other::<U82>(&prk, &info).unwrap();
     assert! ( okm_calc == okm);
 }
 
@@ -208,12 +204,12 @@ fn test_case_6_5869()
        ea00033de03984d34918");// (42 octets)
 
     //let prk_calc = HmacKdf::<sha1::Sha1>::extract (&salt, &ikm);
-    let prk_calc = rfc5869_hkdf::HkdfExtract::<HmacReset<Sha1>>::derive_salt_secret::<U20>(&salt, &ikm).unwrap();
+    let prk_calc = HkdfExtract::<HmacReset<Sha1>>::derive_salt_secret::<U20>(&salt, &ikm).unwrap();
     //let prk_calc = HkdfSha1Extract::derive_with_salt2(&ikm, &salt, &[]);
     assert! ( prk_calc == prk);
 
     //let okm_calc = HmacKdf::<sha1::Sha1>::expand::<U42>(&prk, &info);
-    let okm_calc = rfc5869_hkdf::HkdfExpand::<HmacReset<sha1::Sha1>>::derive_secret_other::<U42>(&prk, &info).unwrap();
+    let okm_calc = HkdfExpand::<HmacReset<Sha1>>::derive_secret_other::<U42>(&prk, &info).unwrap();
     assert! ( okm_calc == Array::from(okm) );
 }
 #[test]
@@ -235,11 +231,11 @@ fn test_case_7_5869()
     
     //let prk_calc = HmacKdf::<sha1::Sha1>::extract (&[0u8;0]/*Salt is auto-padded by hmac */, &ikm);
     //let prk_calc = HkdfSha1Extract::derive(&[0u8;0], &ikm);
-    let prk_calc = rfc5869_hkdf::HkdfExtract::<HmacReset<Sha1>>::derive_salt_secret::<U20>(&[0u8;0], &ikm).unwrap();
+    let prk_calc = HkdfExtract::<HmacReset<Sha1>>::derive_salt_secret::<U20>(&[0u8;0], &ikm).unwrap();
     assert! ( prk_calc == prk);
 
     //let okm_calc = HmacKdf::<sha1::Sha1>::expand::<U42>(&prk, &info);
-    let okm_calc = rfc5869_hkdf::HkdfExpand::<HmacReset<sha1::Sha1>>::derive_secret_other::<U42>(&prk, &info).unwrap();
+    let okm_calc = HkdfExpand::<HmacReset<Sha1>>::derive_secret_other::<U42>(&prk, &info).unwrap();
     assert! ( okm_calc == okm );
 }
 
@@ -251,10 +247,10 @@ fn test_emv_key_derivation() {
     let derived_key_tdes = hex!("b19dd738a79e90c66cfe8aa6215c8d33");
     let atc = hex!("beef");
     
-    let derived_key_aes2 = emv::EmvCommonSessionKdf::<Aes128>::derive_secret_other::<U16>(&master_key, &atc).unwrap();
+    let derived_key_aes2 = EmvCommonSessionKdf::<Aes128>::derive_secret_other::<U16>(&master_key, &atc).unwrap();
     assert! ( derived_key_aes2 == derived_key_aes);
 
-    let derived_key_tdes2 = emv::EmvCommonSessionKdf::<des::TdesEde2>::derive_secret_other::<U16>(&master_key, &atc).unwrap();
+    let derived_key_tdes2 = EmvCommonSessionKdf::<TdesEde2>::derive_secret_other::<U16>(&master_key, &atc).unwrap();
     assert! ( derived_key_tdes2 == derived_key_tdes);
 
 }
@@ -267,14 +263,14 @@ fn test_okdf1 () {
     let salt = [0xBEu8; 16];
     let derived_key = [0xEBu8,0xB0,0x66,0xC7,0x05,0x8F,0x1F,0xE4,0xD2,0x72,0xE2,0xE5,0x32,0x36,0x32,0x2A,0x53,0x0C,0x0D,0x23,0x81,0x72,0x74,0xC2,0x8F,0x94,0x26,0xF4,0x76,0x10,0x1C,0xAC];
     
-    let result = Okdf1::<sha2::Sha256>::derive_secret_other::<U32>(&secret, &salt).unwrap();
+    let result = Okdf1::<Sha256>::derive_secret_other::<U32>(&secret, &salt).unwrap();
     assert! ( result == derived_key);
 
     // From NIST SHA Test vectors
     let secret2 = hex!("fe1f0fb02c9011f4c8c5905934ed15136771737ce31c5859e67f235fe594f5f6");
     let exp_derived_key = hex!("bbeaacc632c2a3db2a9b47f157ab54aa27776c6e74cf0bcaa91b06d5");
 
-    let result2 = Okdf1::<sha2::Sha224>::derive_secret_other::<U28>(&secret2, &[]).unwrap();
+    let result2 = Okdf1::<Sha224>::derive_secret_other::<U28>(&secret2, &[]).unwrap();
     assert! ( result2 == exp_derived_key);
 
     // From NIST SHA Test vectors
@@ -282,7 +278,7 @@ fn test_okdf1 () {
     let salt3 = hex!("a650547208251f6d4237e661c7bf4c77f335390394c37fa1a9f9be836ac28509");
     let exp_derived_key3 = hex!("42e61e174fbb3897d6dd6cef3dd2802fe67b331953b06114a65c772859dfc1aa");
 
-    let result3 = Okdf1::<sha2::Sha256>::derive_secret_other::<U32>(&secret3, &salt3).unwrap();
+    let result3 = Okdf1::<Sha256>::derive_secret_other::<U32>(&secret3, &salt3).unwrap();
     assert! ( result3 == exp_derived_key3);
 }
 
@@ -294,7 +290,7 @@ fn test_okdf6 () {
     let derived_key = hex!("42585a0e7ac98f9408ca1f3f802f6ebd92d697664b846072fbc641599ccbb8e7");
     
     //let result = Okdf6::<Hmac<sha2::Sha256>,u32>::derive_from_secret_salt_other2_variable(&secret, &salt, &auxiliary_secret);
-    let result = Okdf6::<HmacReset<sha2::Sha256>,u32>::new_with_salt(&salt).derive_self_secret_other::<U32>(&secret, &auxiliary_secret).unwrap();
+    let result = Okdf6::<HmacReset<Sha256>,u32>::new_with_salt(&salt).derive_self_secret_other::<U32>(&secret, &auxiliary_secret).unwrap();
 
     //println! ( "{result:02x}");
     assert! ( result == derived_key)
@@ -372,7 +368,7 @@ fn test_nist_sp800_108_feedback_mode() {
     let fixed_input_data = hex!("fb5294ed40a0e4aa70a7be13913070a4c5cfc05f89b9f7dd26a493b8c63889c7c3b0b60dd6d598ffa296a426224c727a501946");
     let ko = hex!("7164471f559812581a53aaf7fb6d6c53a1293115cda873887efcc7ce6b3a026b2d19f0d38db8590e218a2676df88f53cab3313ed63bd1e4828f3c066ea5eb1fd");
 
-    let result = nistsp800_108::NistKdfFeedbackModeWithCounter::<Cmac<Aes128>,u16>::derive_secret_other::<U64>(&ki, &fixed_input_data ).unwrap();
+    let result = NistKdfFeedbackModeWithCounter::<Cmac<Aes128>,u16>::derive_secret_other::<U64>(&ki, &fixed_input_data ).unwrap();
 
     //println! ( "cal={result:02x?}\nexp={ko:02x?}");
     assert! ( result == ko);
@@ -387,7 +383,7 @@ fn test_nist_sp800_108_feedback_mode() {
     let fixed_input_data = hex!("62afe5fed91e797221a854336b0aadd8a05ad0e3c8345729897b2efcec5a1178a2fa4c063007b67a7015e0d6b7271ea8d86b44");
     let ko = hex!("88a9aae193abdd3fe8143bab66014ae41dc2d12ea9d08f5871588fc5d827924eb9942989d7a36d4b3b107997566472cad5942bd13cb5cff32b9dae30f1bb6300");
 
-    let result = nistsp800_108::NistKdfFeedbackModeNoCounter::<Cmac<Aes128>>::derive_secret_salt_other::<U64>(&ki, &iv, &fixed_input_data).unwrap();
+    let result = NistKdfFeedbackModeNoCounter::<Cmac<Aes128>>::derive_secret_salt_other::<U64>(&ki, &iv, &fixed_input_data).unwrap();
     assert! ( result == ko);
 
 
@@ -401,13 +397,13 @@ fn test_nist_sp800_108_feedback_mode() {
     let fixed_input_data = hex!("28400c621bc2f7ae04de8ab279009803885e7966b2391e7a2cf28ca458f83f48882135066d31f701fb46937cf867dabbfa1bac");
     let ko = hex!("3f46494db77b4497075e0abea59b15c4d97b5055e48eaf1db3c8601205bace9a6053c20867f6756ad0e2fc5c81c69f0427ef66ceb1d1d18f4f2678e10cb93913");
 
-    let result = nistsp800_108::NistKdfFeedbackModeNoCounter::<Cmac<TdesEde2>>::derive_secret_salt_other::<U64>(&ki, &iv, &fixed_input_data).unwrap();
+    let result = NistKdfFeedbackModeNoCounter::<Cmac<TdesEde2>>::derive_secret_salt_other::<U64>(&ki, &iv, &fixed_input_data).unwrap();
     assert! ( result == ko);
 
     let ki = hex!("91cce7832e1caf170f6961b6b65805c4cb487f719819a2343149040cf9d88d09d112db117c97dea0e15d7c0fa03727082c0909f420a10b9b082958ecb9ad3d21"); 
     let fixed_input_data = hex!("1a20ea91b6104c8d36b0353d7a2880c1e167b572857b78204e9206cb6ea06cace3555e87442debbc780f94f223c22a5819568a");
     let ko = hex!("819fe4adc7d6e06ec9700e4ba19291b9b2dd7c76b6ee85f3eec5f2bc5928311596a4a316875555a0ec467636122b3629d2f5ca092dbf620423c5650fc1a18a8b2cb1ffc8a1845751a5329a0d1a2a22119a1e129bb5c86d4c92cd6a189513ea8ea615b64e94fddfe2c79b3c50884454c7153103aba3af59cbb3ab35719e3291bb296bdce9d0a7d3f8a1c08cf68e5b74f556f3a389d89b5a55142b023bb0bde0899d3ed55f710a1bc0bc934aa736280fcdc90408417129fb0c57413b955ea8d919d59b3566a00edf54ff9d825c24d18f2fc6622ae0273982394953e45912f0967d6a398c446d8d9af7dd4048683ffd3415c318efe2a7f21a975cda34f84940c7c4995a");
-    let result = nistsp800_108::NistKdfFeedbackModeNoCounter::<HmacReset<Sha512>>::derive_secret_other::<U258>(&ki, &fixed_input_data ).unwrap();
+    let result = NistKdfFeedbackModeNoCounter::<HmacReset<Sha512>>::derive_secret_other::<U258>(&ki, &fixed_input_data ).unwrap();
 
     assert! ( result == ko);
 }
@@ -427,7 +423,7 @@ fn test_nist_sp800_108_double_pipeline_mode() {
     let fixed_input_data = hex!("aa5acbce73a98d4c4f361d5c22a2cc6f6bdc30027aa31af1ba8b15a5bd5b6a34d133519ad1a82483c2d2a6dd9a97273a780421");
     let ko = hex!("ff1c72ec38b8968a1ce0942a571a1f522ddd2a1c6ffc2b60c90bb54a5c0e9de40d289686cbff127b408ec64ef615b18c1abc0736ae4c94e33e54d832e686276e");
 
-    let result = nistsp800_108::NistKdfDblPipeline::<Cmac<Aes128>,u8>::derive_secret_other::<U64>(&ki, &fixed_input_data ).unwrap();
+    let result = NistKdfDblPipeline::<Cmac<Aes128>,u8>::derive_secret_other::<U64>(&ki, &fixed_input_data ).unwrap();
 
     //println! ( "exp={:02X?}\ncal={:02X?}",ko, result);
     assert! ( result == ko);
@@ -436,7 +432,7 @@ fn test_nist_sp800_108_double_pipeline_mode() {
     let fixed_input_data = hex!("fb95eb3c47dcad3b783b045b29bcb6f5aefc0389735843b92b4d8fab97d61350b76b2a83442d7c5aa497aa1cf441760281a08b");
     let ko = hex!("2f157687f782c8b64325826e3c755194c70abffd9d78c4678924b9d73dcced86dcaf7dfa3bf56cf03fa45c7fca05ca1092c41bbd934131e95db2b204241a9d02");
 
-    let result = nistsp800_108::NistKdfDblPipeline::<Cmac<Aes256>,u32>::derive_secret_other::<U64>(&ki, &fixed_input_data ).unwrap();
+    let result = NistKdfDblPipeline::<Cmac<Aes256>,u32>::derive_secret_other::<U64>(&ki, &fixed_input_data ).unwrap();
 
     //println! ( "exp={:02X?}\ncal={:02X?}",ko, result);
     assert! ( result == ko);
@@ -450,7 +446,7 @@ fn test_nist_sp800_108_double_pipeline_mode() {
     let fixed_input_data = hex!("335660eb265d2044efa06eacd848d3f9f57d219011343318f3a964df4a6fb1bf6cbdee711c7fcbe73b8f257f992e47e8b065af");
     let ko = hex!("a73bd29176e38e761222ae07d639181f4b2c555a3b261815cde5d88a67c8b95c58b6b66ea4f10608c6d799b051519fc8e89de00cdc556350a7d966475086f9af");
 
-    let result = nistsp800_108::NistKdfDblPipeline::<Cmac<Aes128>,u0>::derive_secret_other::<U64>(&ki, &fixed_input_data ).unwrap();
+    let result = NistKdfDblPipeline::<Cmac<Aes128>,u0>::derive_secret_other::<U64>(&ki, &fixed_input_data ).unwrap();
 
     //println! ( "exp={:02X?}\ncal={:02X?}",ko, result);
     assert! ( result == ko);
@@ -468,15 +464,16 @@ fn test_nist_sp800_108_double_pipeline_mode() {
 #[test]
 #[cfg(feature="rustcrypto-sha2")]
 fn test_x963_kdf () {
+    
     let sharedsecret = hex!("09abaf6b0893649c6550581fd54ea774492a589cfc4951c3ca360caa4b5581fc");
     let info = hex!("012345");
     let output_no_info = hex!("bbc69c6f314526506989ce92e238095d");
     let output_with_info = hex!("53f87b89304e66181917ea7ba5a199d9");
 
-    let result_no_info = ansi_x9_63::X963KdfSha256::derive_secret_other::<U16>(&sharedsecret, &[]).unwrap();
+    let result_no_info = X963KdfSha256::derive_secret_other::<U16>(&sharedsecret, &[]).unwrap();
     assert! ( result_no_info == output_no_info);
 
-    let result_with_info = ansi_x9_63::X963KdfSha256::derive_secret_other::<U16>(&sharedsecret, &info).unwrap();
+    let result_with_info = X963KdfSha256::derive_secret_other::<U16>(&sharedsecret, &info).unwrap();
     assert! ( result_with_info == output_with_info);
 
     // From NIST Test Vectors - https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Algorithm-Validation-Program/documents/components/800-135testvectors/ansx963_2001.zip
@@ -484,7 +481,7 @@ fn test_x963_kdf () {
     let shared_info = hex!("856a53f3e36a26bbc5792879f307cce2");
     let exp_res = hex!("6e5fad865cb4a51c95209b16df0cc490bc2c9064405c5bccd4ee4832a531fbe7f10cb79e2eab6ab1149fbd5a23cfdabc41242269c9df22f628c4424333855b64e95e2d4fb8469c669f17176c07d103376b10b384ec5763d8b8c610409f19aca8eb31f9d85cc61a8d6d4a03d03e5a506b78d6847e93d295ee548c65afedd2efec");
 
-    let result2 = ansi_x9_63::X963KdfSha1::derive_secret_other::<U128>(&z, &shared_info).unwrap();
+    let result2 = X963KdfSha1::derive_secret_other::<U128>(&z, &shared_info).unwrap();
     //println! ( "result={result2:02X?}")
     assert! ( result2 == exp_res);
 }
@@ -552,28 +549,28 @@ fn test_hdkf_kdf () {
     let output_with_info_and_salt2 = hex!("410f65514d76b1ade8619a8c33a2b4d851b93ac808c39ba7033618a503ed");
     let output_expand_only = hex!( "550eef5a27a22c4e28e37d503ca2b1c8");
 
-    let result2 = rfc5869_hkdf::HkdfExtract::<HmacReset<Sha256>>::derive_salt_secret::<U32>(&[], &sharedsecret).unwrap();
+    let result2 = HkdfExtract::<HmacReset<Sha256>>::derive_salt_secret::<U32>(&[], &sharedsecret).unwrap();
     assert! ( result2 == extracted_no_salt);
 
-    let result3 = rfc5869_hkdf::HkdfExtract::<HmacReset<Sha256>>::derive_salt_secret::<U32>(&salt, &sharedsecret).unwrap();
+    let result3 = HkdfExtract::<HmacReset<Sha256>>::derive_salt_secret::<U32>(&salt, &sharedsecret).unwrap();
     assert! ( result3 == extracted_with_salt);
 
-    let result4 = rfc5869_hkdf::HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U16>(&extracted_no_salt, &[]).unwrap();
+    let result4 = HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U16>(&extracted_no_salt, &[]).unwrap();
     assert! ( result4 == output_no_info);
 
-    let result5 = rfc5869_hkdf::HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U16>(&extracted_no_salt, &partyu_info).unwrap();
+    let result5 = HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U16>(&extracted_no_salt, &partyu_info).unwrap();
     assert! ( result5 == output_with_info);
 
-    let result6 = rfc5869_hkdf::HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U16>(&extracted_with_salt, &partyu_info).unwrap();
+    let result6 = HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U16>(&extracted_with_salt, &partyu_info).unwrap();
     assert! ( result6 == output_with_info_and_salt);
 
-    let result7 = rfc5869_hkdf::Hkdf::<Sha256>::derive_secret_salt_other::<U16>(&sharedsecret, &salt,  &partyu_info).unwrap();
+    let result7 = Hkdf::<Sha256>::derive_secret_salt_other::<U16>(&sharedsecret, &salt,  &partyu_info).unwrap();
     assert! ( result7 == output_with_info_and_salt);
 
-    let result8 = rfc5869_hkdf::Hkdf::<Sha256>::derive_secret_salt_other::<U30>(&sharedsecret, &salt,  &partyu_info).unwrap();
+    let result8 = Hkdf::<Sha256>::derive_secret_salt_other::<U30>(&sharedsecret, &salt,  &partyu_info).unwrap();
     assert! ( result8 == output_with_info_and_salt2);
 
-    let result9 = rfc5869_hkdf::HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U16>(&sharedsecret, &partyu_info).unwrap();
+    let result9 = HkdfExpand::<HmacReset<Sha256>>::derive_secret_other::<U16>(&sharedsecret, &partyu_info).unwrap();
     assert! ( result9 == output_expand_only);
 }
 
@@ -603,7 +600,7 @@ fn test_tls1_prf_kdf () {
     //let seed = b"master secret\0";
     let r1 = hex!("7a29dae84056ebbf71c406c0a5f032c2");
 
-    let result = rfc5246_tls::Tls1Prf::<HmacReset<Sha256>>::derive_secret_other::<U16>(&shared_secret, &seed).unwrap();
+    let result = Tls1Prf::<HmacReset<Sha256>>::derive_secret_other::<U16>(&shared_secret, &seed).unwrap();
     assert! ( result == r1);
 
     // Test vectors
@@ -614,13 +611,13 @@ fn test_tls1_prf_kdf () {
     6b 30 17 91 e9 0d 35 c9 c9 a4 6b 4e 14 ba f9 af 0f a0 22 f7 07 7d ef 17 ab fd 37 97 c0 56 4b ab 4f bc 91 66 6e 9d ef 9b\
     97 fc e3 4f 79 67 89 ba a4 80 82 d1 22 ee 42 c5 a7 2e 5a 51 10 ff f7 01 87 34 7b 66 ");
 
-    let result = rfc5246_tls::Tls1Prf::<HmacReset<Sha256>>::derive_secret_others::<U100>(&sharedsecret, [label.as_slice(), seed.as_ref()]).unwrap();
+    let result = Tls1Prf::<HmacReset<Sha256>>::derive_secret_others::<U100>(&sharedsecret, [label.as_slice(), seed.as_ref()]).unwrap();
     assert!( result == output);
     
     let sharedsecret = hex!("09abaf6b0893649c6550581fd54ea774492a589cfc4951c3ca360caa4b5581fc");
     let seed = hex!("9876");
     let output_with_seed = hex!("f089fefe45c29d8252ca99fc0c9728217ffe4337ef38e07d0cfd85d113d8bd2f2ac15c0f");
-    let result2 = rfc5246_tls::Tls1Prf::<HmacReset<Sha256>>::derive_secret_other::<U36>(&sharedsecret, &seed).unwrap();
+    let result2 = Tls1Prf::<HmacReset<Sha256>>::derive_secret_other::<U36>(&sharedsecret, &seed).unwrap();
     
     assert!( result2 == output_with_seed);
 
@@ -634,10 +631,10 @@ fn test_tls1_prf_kdf () {
     let master_secret = hex!("202c88c00f84a17a20027079604787461176455539e705be730890602c289a5001e34eeb3a043e5d52a65e66125188bf");
     let key_block = hex!("d06139889fffac1e3a71865f504aa5d0d2a2e89506c6f2279b670c3e1b74f531016a2530c51a3a0f7e1d6590d0f0566b2f387f8d11fd4f731cdd572d2eae927f6f2f81410b25e6960be68985add6c38445ad9f8c64bf8068bf9a6679485d966f1ad6f68b43495b10a683755ea2b858d70ccac7ec8b053c6bd41ca299d4e51928");
 
-    let result2 = rfc5246_tls::Tls1Prf::<HmacReset<Sha256>>::derive_secret_others::<U48>(&pre_master_secret, [b"master secret", client_hello_random.as_slice(), &server_hello_random]).unwrap();
+    let result2 = Tls1Prf::<HmacReset<Sha256>>::derive_secret_others::<U48>(&pre_master_secret, [b"master secret", client_hello_random.as_slice(), &server_hello_random]).unwrap();
     assert! ( result2 == master_secret);
 
-    let result3 = rfc5246_tls::Tls1Prf::<HmacReset<Sha256>>::derive_secret_others::<U128>(&master_secret, [b"key expansion", server_random.as_slice(), &client_random]).unwrap();
+    let result3 = Tls1Prf::<HmacReset<Sha256>>::derive_secret_others::<U128>(&master_secret, [b"key expansion", server_random.as_slice(), &client_random]).unwrap();
     assert! ( result3 == key_block);
     
 }
@@ -672,30 +669,30 @@ fn test_sskdf_kdf () {
     let output_no_info = hex!("2476f904abde1de5e0ba9d5b0345020c");
     let output_with_info = hex!("75607159f86a412bd889ad4c3d52da77");
 
-    let result = nistsp800_56::SskdfHash::<Sha256>::derive_secret_other::<U16> ( &sharedsecret, &[]).unwrap();
+    let result = SskdfHash::<Sha256>::derive_secret_other::<U16> ( &sharedsecret, &[]).unwrap();
     assert! ( result == output_no_info);
 
-    let result2 = nistsp800_56::SskdfHash::<Sha256>::derive_secret_other::<U16> ( &sharedsecret, &info).unwrap();
+    let result2 = SskdfHash::<Sha256>::derive_secret_other::<U16> ( &sharedsecret, &info).unwrap();
     assert! ( result2 == output_with_info);
 
     let output_no_info_hmac = hex!("be4b2c6ff257c31aae617b7d6a3878a7");
     let output_with_info_hmac = hex!("989229c5a877a568660dad3cb07f4280");
 
-    let result3 = nistsp800_56::SskdfMac::<HmacReset<Sha256>>::derive_secret_other::<U16> ( &sharedsecret, &[]).unwrap();
+    let result3 = SskdfMac::<HmacReset<Sha256>>::derive_secret_other::<U16> ( &sharedsecret, &[]).unwrap();
     assert! ( result3 == output_no_info_hmac);
 
-    let result4 = nistsp800_56::SskdfMac::<HmacReset<Sha256>>::derive_secret_other::<U16> ( &sharedsecret, &info).unwrap();
+    let result4 = SskdfMac::<HmacReset<Sha256>>::derive_secret_other::<U16> ( &sharedsecret, &info).unwrap();
     assert! ( result4 == output_with_info_hmac);
 
     let output_with_info_hmac384 = hex!("51ddd1c15c9d5c473535b3d4501df29498d5f9aa2a36d11711d89dfb6756ab011cbc3b50b84884b862a04ce0db659430e23947c1a1bb52b9e88a0f89c8ec6b384aeba7a35be49bace507d71f4925475a");
-    let result5 = nistsp800_56::SskdfMac::<HmacReset<Sha384>>::derive_secret_other::<U80> ( &sharedsecret, &info).unwrap();
+    let result5 = SskdfMac::<HmacReset<Sha384>>::derive_secret_other::<U80> ( &sharedsecret, &info).unwrap();
     assert! ( result5 == output_with_info_hmac384);
 
     let salt = hex!("ABCDEF");
     let output_with_info_hmac512_salt = hex!("4db999bba0b15f1401b5");
     //let result6 = nistsp800_56::SskdfMac::<Hmac<Sha512>>::derive_from_secret_salt_other2_variable ( &sharedsecret, &salt, &info);
     //let result6 = nistsp800_56::SskdfMac::<Hmac<Sha512>>::new_from_slice(&salt).derive_self_secret_other (&sharedsecret, &info);
-    let result6 = nistsp800_56::SskdfMac::<HmacReset<Sha512>>::new_with_salt(&salt).derive_self_secret_other::<U10> (&sharedsecret, &info).unwrap();
+    let result6 = SskdfMac::<HmacReset<Sha512>>::new_with_salt(&salt).derive_self_secret_other::<U10> (&sharedsecret, &info).unwrap();
     
     assert! ( result6 == output_with_info_hmac512_salt);
 }
@@ -716,7 +713,7 @@ fn test_sshkdf() {
     let ssh_type = 'A' as u8; //b"A";
     let exp_result = hex!( "f3c2fb78cf931bd0fb84dd093baa27e552b72b188d999d0cdfc8050726c39358");
 
-    let result = rfc4253_ssh::SshKdf::<Sha256>::derive::<U32> ( &key, xcghash, ssh_type, sessionid ).unwrap();
+    let result = SshKdf::<Sha256>::derive::<U32> ( &key, xcghash, ssh_type, sessionid ).unwrap();
     assert! ( result == exp_result);
 
     let ssh_type2 = 'B' as u8;
@@ -724,8 +721,7 @@ fn test_sshkdf() {
         "ef73d12c6c115e11847f45f06592130778fc2709906373066a1715178d5e"
         "13bda496dfb6adfe2dc7a8732a20843fcdd62874" );
 
-    let result2 = rfc4253_ssh::SshKdf::<Sha256>::derive::<U80> ( &key, xcghash, ssh_type2, sessionid ).unwrap();
-
+    let result2 = SshKdf::<Sha256>::derive::<U80> ( &key, xcghash, ssh_type2, sessionid ).unwrap();
     assert! ( result2 == exp_result2);
 
 
@@ -741,22 +737,22 @@ fn test_sshkdf() {
     let int_key_client_to_server = hex!("e153e04886c0dc446dde9a9b3b13efb77151764d");
     let int_key_server_to_client = hex!("c8e4f61bd6b5abb2c6e06eca7b302349435e4842");
 
-    let result2 = rfc4253_ssh::SshKdf::<Sha1>::derive::<U8> ( &k, &h, 'A' as u8, &session_id ).unwrap();
+    let result2 = SshKdf::<Sha1>::derive::<U8> ( &k, &h, 'A' as u8, &session_id ).unwrap();
     assert! (result2 == initial_iv_client_to_server);
 
-    let result2 = rfc4253_ssh::SshKdf::<Sha1>::derive::<U8> ( &k, &h, 'B' as u8, &session_id ).unwrap();
+    let result2 = SshKdf::<Sha1>::derive::<U8> ( &k, &h, 'B' as u8, &session_id ).unwrap();
     assert! (result2 == initial_iv_server_to_client);
 
-    let result2 = rfc4253_ssh::SshKdf::<Sha1>::derive::<U24> ( &k, &h, 'C' as u8, &session_id ).unwrap();
+    let result2 = SshKdf::<Sha1>::derive::<U24> ( &k, &h, 'C' as u8, &session_id ).unwrap();
     assert! (result2 == enc_key_client_to_server);
 
-    let result2 = rfc4253_ssh::SshKdf::<Sha1>::derive::<U24> ( &k, &h, 'D' as u8, &session_id ).unwrap();
+    let result2 = SshKdf::<Sha1>::derive::<U24> ( &k, &h, 'D' as u8, &session_id ).unwrap();
     assert! (result2 == enc_key_server_to_client);
 
-    let result2 = rfc4253_ssh::SshKdf::<Sha1>::derive::<U20> ( &k, &h, 'E' as u8, &session_id ).unwrap();
+    let result2 = SshKdf::<Sha1>::derive::<U20> ( &k, &h, 'E' as u8, &session_id ).unwrap();
     assert! (result2 == int_key_client_to_server);
 
-    let result2 = rfc4253_ssh::SshKdf::<Sha1>::derive::<U20> ( &k, &h, 'F' as u8, &session_id ).unwrap();
+    let result2 = SshKdf::<Sha1>::derive::<U20> ( &k, &h, 'F' as u8, &session_id ).unwrap();
     assert! (result2 == int_key_server_to_client);
 
         
@@ -880,7 +876,7 @@ fn test_x942_asn1kdf()
     let supp_priv_info = hex!("4A6F 686E 204B 656E 6E65 6479 2061 6E64 2046 7269 656E 6473");
     let exp_res = hex!("31B0 CA24 DF4A FDE9 B6D6 44E9 DC3B 030E 429D 7E15 2D90 9C8F BFCA 0A16 AA3E D5EA 2B56 5E12 DE3D FCDC");
 
-    let res = ansi_x9_42::X942Asn1Kdf::<Sha1>::new(&algorithm_id, &[]).derive_self_secret_other::<U40>(&zz, &supp_priv_info).unwrap();
+    let res = X942Asn1Kdf::<Sha1>::new(&algorithm_id, &[]).derive_self_secret_other::<U40>(&zz, &supp_priv_info).unwrap();
     
     assert! ( res == exp_res);
 
@@ -891,7 +887,7 @@ fn test_x942_asn1kdf()
 
     // id-alg-CMS3DESwrap OBJECT IDENTIFIER ::= { iso(1) member-body(2) us(840) rsadsi(113549) pkcs(1) pkcs-9(9) smime(16) alg(3) 6 }
     let algorithm_id2 = hex! ("30 0D 06 0B 2A 86 48 86 F7 0D 01 09 10 03 06");
-    let res2 = ansi_x9_42::X942Asn1Kdf::<Sha1>::new(&algorithm_id2, &[]).derive_self_secret_other::<U10>(&zz, &supp_priv_info).unwrap();
+    let res2 = X942Asn1Kdf::<Sha1>::new(&algorithm_id2, &[]).derive_self_secret_other::<U10>(&zz, &supp_priv_info).unwrap();
     println!( "{res2:02X?}");
 }
 
@@ -1145,7 +1141,7 @@ fn test_apple_x963_kdf()
     let input = hex!("aa453db21f99ab4657b35a1aabf102e6625e83c9b157fe735ab1cc68ea7a8434");
     let output = hex!( "0cb0519cd4bd777362cf614127a08b7a89c0e1d5ada8fbb8027a8b08eb161368");
 
-    let output_calc =  ansi_x9_63::X963KdfSha256::derive_secret_other::<U32>(&input, &[]).unwrap();
+    let output_calc =  X963KdfSha256::derive_secret_other::<U32>(&input, &[]).unwrap();
 
     assert! ( output_calc == output);
 
@@ -1153,7 +1149,7 @@ fn test_apple_x963_kdf()
     let label = hex!("11223344");
     let output2 = hex!("5760c9a8fd32d80b276dfc37c8cae8e1e2f0441bf6f6e252ab47825dd7053ee3");
 
-    let output_calc2 =  ansi_x9_63::X963KdfSha256::derive_secret_other::<U32>(&input2, &label).unwrap();
+    let output_calc2 =  X963KdfSha256::derive_secret_other::<U32>(&input2, &label).unwrap();
 
     assert! ( output_calc2 == output2);
 }

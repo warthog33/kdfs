@@ -591,7 +591,8 @@ where M:Mac + KeyInit + FixedOutputReset + Clone,
 ///   Output Length Lk -> Length of out buffer, which is expected to equal the output size of the MAC function (M::OutputSize) - ISO 11770-8 allows for Lk smaller than MAC function output but this is not currently supported
 ///   Salt t -> Function parameter salt as a byte slice
 ///   Secret s -> Function parameter secret as a byte slice
-///  The other_data parameter is used as to include additional data not strictly allowed by ISO 11770-8  
+///  The other_data parameter is used as to include additional data not strictly allowed by ISO 11770-8.
+///  Other_data is processed before te secret material so it can be used as a label consistent with RFC 9180.  
 /// 
 /// Sample from RFC 5869, Sample 1  
 /// ```
@@ -638,9 +639,9 @@ impl<M: Mac + KeyInit + FixedOutputReset + Clone> Kdf for Ktf1<M> {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
         let mut maccer = self.maccer.clone();
         
-        secret.into_iter().for_each(|v|{Mac::update(&mut maccer, v); println!("secret={:02X?}", v)});
         other_data.into_iter().for_each(|v|{ Mac::update(&mut maccer, v); println!("other={:02X?}", v)});
-
+        secret.into_iter().for_each(|v|{Mac::update(&mut maccer, v); println!("secret={:02X?}", v)});
+        
         if out.len() <= M::OutputSize::USIZE { 
             // let mut buf = Array::default();
             // maccer.finalize_into_reset(&mut buf);
