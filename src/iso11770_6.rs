@@ -246,7 +246,7 @@ where   H:Digest + FixedOutputReset,
 /// let result2 = SskdfHash::<Sha256>::derive_secret_other::<U16> ( &sharedsecret, &info).unwrap();
 /// assert! ( result2 == output_with_info);
 /// ```
-#[derive (Clone)]
+#[derive (Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Okdf3<H: Digest, I: Copy + AddAssign<I>> {
     hasher: PhantomData<H>,
     salt: Vec<u8>,
@@ -266,6 +266,7 @@ impl<H: Digest + FixedOutputReset, I> Default for Okdf3<H,I>
         
     }
 }
+
 
 ///
 /// As per the ISO specification, the salt is added to the hash after the
@@ -295,6 +296,9 @@ impl<H: Digest + FixedOutputReset, I> Kdf for Okdf3<H,I>
         });
     }
 }
+
+
+
 
 
 
@@ -472,10 +476,48 @@ impl <H:Digest + FixedOutputReset,I: Copy + One + AddAssign<I> + ToBytes + Parti
 /// assert! ( k_calc4 == k2);
 /// ```
 /// 
-#[derive(Clone)]
-pub struct Okdf5<H: Digest, const N: u32> {
+//#[derive(Clone, Debug, PartialEq, Eq, PartialOrd)]
+pub struct Okdf5<H, const N: u32> {
     hasher: PhantomData<H>,
 }
+impl<H, const N: u32> std::fmt::Debug for Okdf5<H, N>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Okdf5").field("hasher", &self.hasher).finish()
+    }
+}
+// impl<H, const N: u32> std::cmp::PartialOrd for Okdf5<H, N>
+// {
+//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+//         self.hasher.partial_cmp(&other.hasher)
+//     }
+// }
+// impl<H, const N: u32> std::cmp::PartialEq for Okdf5<H, N>
+// {
+//     fn eq(&self, other: &Self) -> bool {
+//         self.hasher == other.hasher
+//     }
+// }
+// impl<H, const N: u32> std::cmp::Eq for Okdf5<H, N>
+// {
+// }
+// impl<H, const N: u32> std::cmp::Ord for Okdf5<H, N>
+// {
+//     fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+//         todo!()
+//     }
+// }
+// impl<H, const N: u32> Copy for Okdf5<H, N>
+// {
+    
+// }
+impl<H, const N: u32> Clone for Okdf5<H, N>
+{
+    fn clone(&self) -> Self {
+        Self { hasher: self.hasher.clone() }
+    }
+}
+
 
 
 impl<H: Digest, const N: u32> Default for Okdf5<H,N> {

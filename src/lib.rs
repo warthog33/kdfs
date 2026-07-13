@@ -300,6 +300,35 @@ pub mod rfc5869_hkdf {
     pub type Hkdf2<M> = crate::iso11770_6::Tkdf1<M,u8>;
 }
 
+#[cfg(feature="rustcrypto-sha2")]
+pub mod rfc8619 {
+    // HKDF with OID
+    use digest::const_oid::{AssociatedOid, ObjectIdentifier};
+    use sha2::{Sha256, Sha384, Sha512};
+    use crate::rfc5869_hkdf::Hkdf;
+
+    //id-alg-hkdf-with-sha256 OBJECT IDENTIFIER ::= { iso(1) member-body(2) us(840) rsadsi(113549) pkcs(1) pkcs-9(9) smime(16) alg(3) 28 }
+    pub const ID_ALG_HKDF_WITH_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.16.3.28");
+    pub type HkdfSha256 = Hkdf<Sha256>;
+    impl AssociatedOid for HkdfSha256 {
+        const OID: ObjectIdentifier = ID_ALG_HKDF_WITH_SHA256;
+    }
+    
+
+    //id-alg-hkdf-with-sha384 OBJECT IDENTIFIER ::= { iso(1) member-body(2) us(840) rsadsi(113549) pkcs(1) pkcs-9(9) smime(16) alg(3) 29 }
+    pub const ID_ALG_HKDF_WITH_SHA384: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.16.3.29");
+    pub type HkdfSha384 = Hkdf<Sha384>;
+    impl AssociatedOid for HkdfSha384 {
+        const OID: ObjectIdentifier = ID_ALG_HKDF_WITH_SHA256;
+    }
+   //id-alg-hkdf-with-sha512 OBJECT IDENTIFIER ::= { iso(1) member-body(2) us(840) rsadsi(113549) pkcs(1) pkcs-9(9) smime(16) alg(3) 30 }
+    pub const ID_ALG_HKDF_WITH_SHA512: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.16.3.30");
+    pub type HkdfSha512 = Hkdf<Sha512>;
+    impl AssociatedOid for HkdfSha512 {
+        const OID: ObjectIdentifier = ID_ALG_HKDF_WITH_SHA256;
+    }
+}
+
 /// Key derivation functions described in the EMV specifications
 pub mod emv {
     pub type EmvSessionKeyType = crate::misc::EmvSessionKeyType;
