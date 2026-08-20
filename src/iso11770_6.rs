@@ -1,16 +1,18 @@
+use std::ops::Mul;
 use std::{marker::PhantomData, ops::AddAssign};
-
+use cipher::typenum::{IsLessOrEqual, Prod};
 //use crypto_common::KeyInit;
 //use crypto_common::generic_array::{GenericArray, ArrayLength};
 use digest::{Digest, FixedOutputReset, OutputSizeUser, Mac, Update};
 use cipher::{KeyInit};
 use hybrid_array::{ArraySize, Array};
-use num_traits::{One, ToBytes, Zero};
+use num_traits::{One, ToBytes, WrappingAdd, Zero};
 use hybrid_array::typenum::Unsigned;
+//use shake::ExtendableOutput;
 //use generic_array::{GenericArray, ArrayLength};
-use crate::{Error, GetExpand, GetExtract, KdfLabelled, Label};
+use crate::{BoundedTypeNum, Error, KdfArray};
 
-use crate::{InitSalt, Kdf, KdfFixed, TwoStepKdf};
+use crate::{InitSalt, KdfSlice, KdfFixed, TwoStepKdf};
 
 ///
 /// Utility function which splits the output buffer into chunks and calls the closure to get the contents
@@ -19,17 +21,37 @@ use crate::{InitSalt, Kdf, KdfFixed, TwoStepKdf};
 pub fn block_loop<F,L,I> ( mut counter: I, salt: &[u8], out: &mut [u8], mut get_block: F ) -> Result<(), Error>
 where   L: ArraySize,
         F: FnMut(I, &[u8]) -> Array<u8, L>,
-        I: One + Zero + Copy + AddAssign<I>,
+        I: One + Zero + Copy + AddAssign<I> + WrappingAdd + Eq,
 {
     let mut prev_block: &[u8] = salt;
     
     for chunk in out.chunks_mut(L::USIZE) {
         chunk.copy_from_slice(&get_block(counter, prev_block)[..chunk.len()]);
         prev_block = chunk;
-        counter += I::one();
+        //if counter == I::max_value() { return Err(Error::InvalidBufferSize) }
+        counter = counter.wrapping_add(&I::one());
         if counter.is_zero() { return Err(Error::InvalidBufferSize) }
     }
     return Ok(())
+}
+
+///
+/// Utility function which splits the output buffer into chunks and calls the closure to get the contents
+/// THis version assumes the counter cannot wrap due to prior bounds. If it is called incorrectly it will just... wrap
+/// 
+pub fn block_loop_infallible<F,L,I> ( mut counter: I, salt: &[u8], out: &mut [u8], mut get_block: F )
+where   L: ArraySize,
+        F: FnMut(I, &[u8]) -> Array<u8, L>,
+        I: One + Zero + Copy + AddAssign<I> + WrappingAdd + Eq,
+{
+    let mut prev_block: &[u8] = salt;
+    
+    for chunk in out.chunks_mut(L::USIZE) {
+        chunk.copy_from_slice(&get_block(counter, prev_block)[..chunk.len()]);
+        prev_block = chunk;
+        //if counter == I::max_value() { return Err(Error::InvalidBufferSize) }
+        counter = counter.wrapping_add(&I::one());
+    }
 }
 
 
@@ -109,12 +131,19 @@ impl<H:Digest+FixedOutputReset> KdfFixed for Okdf1<H>
 where <H as digest::OutputSizeUser>::OutputSize: hybrid_array::ArraySize
 {
     type OutputSize = <H as OutputSizeUser>::OutputSize;
+    
+    fn derive_self_secrets_others_fixed<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, Self::OutputSize> {
+        let mut hasher = H::new();
+        secret.into_iter().for_each(|v| Digest::update(&mut hasher, v));
+        other_data.into_iter().for_each(|v| Update::update(&mut hasher, v));
+        hasher.finalize()
+    }
 }
 
 ///
 /// Derive by passing all inputs to the digest function and returning the output
 /// 
-impl<H:Digest+Update> Kdf for Okdf1<H>
+impl<H:Digest+Update> KdfSlice for Okdf1<H>
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> 
     {
@@ -130,6 +159,18 @@ impl<H:Digest+Update> Kdf for Okdf1<H>
     }
 }
 
+
+impl<H:Digest+Update, L: ArraySize> KdfArray<L> for Okdf1<H>
+    where H: Digest<OutputSize=L>
+{
+    fn derive_self_secrets_others_array<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L>
+    {
+        let mut hasher = H::new();
+        secret.into_iter().for_each(|v| Digest::update(&mut hasher, v));
+        other_data.into_iter().for_each(|v| Update::update(&mut hasher, v));
+        hasher.finalize()
+    }
+}
 
 
 
@@ -188,9 +229,9 @@ where   H: Digest + FixedOutputReset,
     }
 }
 
-impl <'a, H, C> Kdf for Okdf2<'a, H, C> 
+impl <'a, H, C> KdfSlice for Okdf2<'a, H, C> 
 where   H:Digest + FixedOutputReset,
-        C:  Copy + AddAssign<C> + ToBytes + One + PartialEq + Zero, 
+        C:  Copy + AddAssign<C> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq, 
 {
     fn derive_self_secrets_others_into<'c,'b>( &self, secret: impl IntoIterator<Item=&'c[u8]>+Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
         let mut hasher = H::new();
@@ -202,6 +243,27 @@ where   H:Digest + FixedOutputReset,
             other_data.clone().into_iter().for_each(|v| Digest::update ( &mut hasher, v));
             hasher.finalize_reset()
         });
+    }
+}
+
+impl <'a, H, C, L> KdfArray<L> for Okdf2<'a, H, C> 
+where   H:Digest + FixedOutputReset,
+        C:  Copy + AddAssign<C> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq + BoundedTypeNum, 
+        L: ArraySize + IsLessOrEqual<Prod<H::OutputSize, C::Max>, Output=hybrid_array::typenum::True>,
+        H::OutputSize: Mul<C::Max>,
+{
+    fn derive_self_secrets_others_array<'c,'b>( &self, secret: impl IntoIterator<Item=&'c[u8]>+Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+        let mut hasher = H::new();
+        let mut out = Array::default();
+        block_loop_infallible ( self.init_counter.clone(), &[], &mut out, |counter, _| {
+            secret.clone().into_iter().for_each(|v| Digest::update ( &mut hasher, v ));
+            Digest::update (&mut hasher, self.algorithm );
+            Digest::update (&mut hasher, counter.to_be_bytes().as_ref());
+            Digest::update ( &mut hasher, self.salt);
+            other_data.clone().into_iter().for_each(|v| Digest::update ( &mut hasher, v));
+            hasher.finalize_reset()
+        });
+        out
     }
 }
 
@@ -280,8 +342,8 @@ impl<H: Digest + FixedOutputReset, I> InitSalt for Okdf3<H,I>
     }
 }
 
-impl<H: Digest + FixedOutputReset, I> Kdf for Okdf3<H,I> 
-    where I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero
+impl<H: Digest + FixedOutputReset, I> KdfSlice for Okdf3<H,I> 
+    where I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
         let mut hasher = H::new();
@@ -297,7 +359,25 @@ impl<H: Digest + FixedOutputReset, I> Kdf for Okdf3<H,I>
     }
 }
 
-
+impl<H: Digest + FixedOutputReset, I, L: ArraySize> KdfArray<L> for Okdf3<H,I> 
+    where I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero + WrappingAdd + Eq + BoundedTypeNum,
+    L: IsLessOrEqual<cipher::typenum::Prod<H::OutputSize, I::Max>, Output=hybrid_array::typenum::True>,
+    H::OutputSize: std::ops::Mul<I::Max>,
+{
+    fn derive_self_secrets_others_array<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone ) -> Array<u8, L> {
+        let mut hasher = H::new();
+        let mut out = Array::<u8,L>::default();
+        block_loop ( I::one(), &[], &mut out, |counter, _| {
+            Digest::update(&mut hasher, counter.to_be_bytes().as_ref());
+            secret.clone().into_iter().for_each(|v|Digest::update(&mut hasher, v));
+            Digest::update(&mut hasher, &self.salt);
+            other_data.clone().into_iter().for_each(|v|Digest::update(&mut hasher, v));
+            //Digest::update(&mut self.hasher, &self.other_info);
+            hasher.finalize_reset()
+        }).unwrap();
+        out
+    }
+}
 
 
 
@@ -346,7 +426,7 @@ impl <'a,H:Digest,I: Copy + One + AddAssign<I> + ToBytes> InitSalt for Okdf4<H,I
     }
 }
 
-impl <H:Digest + FixedOutputReset,I: Copy + One + AddAssign<I> + ToBytes + PartialEq + Zero> Kdf for Okdf4<H,I> 
+impl <H:Digest + FixedOutputReset,I: Copy + One + AddAssign<I> + ToBytes + PartialEq + Zero  + WrappingAdd + Eq> KdfSlice for Okdf4<H,I> 
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
         let mut hasher = H::new();
@@ -360,8 +440,29 @@ impl <H:Digest + FixedOutputReset,I: Copy + One + AddAssign<I> + ToBytes + Parti
         });
 
     }
-
 }
+
+impl <H, I, L> KdfArray<L> for Okdf4<H,I> 
+where H:Digest + FixedOutputReset,
+    I: Copy + One + AddAssign<I> + ToBytes + PartialEq + Zero  + WrappingAdd + Eq + BoundedTypeNum,
+    L: ArraySize + IsLessOrEqual<Prod<H::OutputSize, I::Max>, Output=hybrid_array::typenum::True>,
+    H::OutputSize: Mul<I::Max>,
+{
+    fn derive_self_secrets_others_array<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+        let mut hasher = H::new();
+        let mut out = Array::default();
+
+        block_loop_infallible(I::one(), &[], &mut out, |counter, _| {
+            secret.clone().into_iter().for_each(|v|Digest::update(&mut hasher, v));
+            Digest::update ( &mut hasher, counter.to_be_bytes().as_ref());
+            other_data.clone().into_iter().for_each(|v|Digest::update ( &mut hasher, v ));
+            Digest::update(&mut hasher, &self.salt);
+            hasher.finalize_reset()
+        });
+        out
+    }
+}
+
 // impl <'c,H:Digest + FixedOutputReset,I: Copy + One + AddAssign<I> + ToBytes, L2:ArrayLength<u8>> Kdf for Okdf4<'c,H,I,L2> {
 //     type OutputSize = L2;
 //     #[cfg(not(feature = "iter_based"))]
@@ -486,31 +587,6 @@ impl<H, const N: u32> std::fmt::Debug for Okdf5<H, N>
         f.debug_struct("Okdf5").field("hasher", &self.hasher).finish()
     }
 }
-// impl<H, const N: u32> std::cmp::PartialOrd for Okdf5<H, N>
-// {
-//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//         self.hasher.partial_cmp(&other.hasher)
-//     }
-// }
-// impl<H, const N: u32> std::cmp::PartialEq for Okdf5<H, N>
-// {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.hasher == other.hasher
-//     }
-// }
-// impl<H, const N: u32> std::cmp::Eq for Okdf5<H, N>
-// {
-// }
-// impl<H, const N: u32> std::cmp::Ord for Okdf5<H, N>
-// {
-//     fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
-//         todo!()
-//     }
-// }
-// impl<H, const N: u32> Copy for Okdf5<H, N>
-// {
-    
-// }
 impl<H, const N: u32> Clone for Okdf5<H, N>
 {
     fn clone(&self) -> Self {
@@ -526,7 +602,7 @@ impl<H: Digest, const N: u32> Default for Okdf5<H,N> {
     }
 }
 
-impl<H: Digest + FixedOutputReset, const N: u32> Kdf for Okdf5<H,N> {
+impl<H: Digest + FixedOutputReset, const N: u32> KdfSlice for Okdf5<H,N> {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
         let mut hasher = H::new();
         
@@ -541,6 +617,24 @@ impl<H: Digest + FixedOutputReset, const N: u32> Kdf for Okdf5<H,N> {
     }
 }
  
+ 
+// Uses a 32 bit counter, never going to overflow
+impl<H, L, const N: u32> KdfArray<L> for Okdf5<H,N> 
+    where H: Digest + FixedOutputReset,
+        L: ArraySize,
+{
+    fn derive_self_secrets_others_array<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+        let mut hasher = H::new();
+        let mut out = Array::default();
+        block_loop_infallible ( N, &[], &mut out, |counter,_| {
+            other_data.clone().into_iter().for_each(|v|Digest::update(&mut hasher, v));
+            secret.clone().into_iter().for_each(|v|Digest::update(&mut hasher, v));
+            Digest::update(&mut hasher, counter.to_be_bytes());
+            hasher.finalize_reset()
+        });
+        out
+    }
+}
 
 //
 // OWF6 as defined in ISO 11770-8. The parameters defined in ISO 1177-8 are mapped to function parameters as follows
@@ -603,9 +697,9 @@ where M:Mac + KeyInit + FixedOutputReset,
     }
 }
 
-impl<M, I> Kdf for Okdf6<M,I>
+impl<M, I> KdfSlice for Okdf6<M,I>
 where M:Mac + KeyInit + FixedOutputReset + Clone,
-    I: Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero
+    I: Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
         let mut hasher = self.hasher.clone();
@@ -616,6 +710,27 @@ where M:Mac + KeyInit + FixedOutputReset + Clone,
             other_data.clone().into_iter().for_each ( |v| Mac::update ( &mut hasher, v));
             hasher.finalize_reset().into_bytes()
         });
+    }
+}
+
+
+impl<M, I, L> KdfArray<L> for Okdf6<M,I>
+where M:Mac + KeyInit + FixedOutputReset + Clone,
+    I: Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq + BoundedTypeNum,
+    L: ArraySize + IsLessOrEqual<cipher::typenum::Prod<M::OutputSize, I::Max>, Output=hybrid_array::typenum::True>,
+    M::OutputSize: std::ops::Mul<I::Max>,
+{
+    fn derive_self_secrets_others_array<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+        let mut hasher = self.hasher.clone();
+        let mut out = Array::default();
+
+        block_loop_infallible(I::one(), &[], &mut out, |counter, _| {
+            Mac::update ( &mut hasher, counter.to_be_bytes().as_ref() );
+            secret.clone().into_iter().for_each(|v|Mac::update(&mut hasher, v));
+            other_data.clone().into_iter().for_each ( |v| Mac::update ( &mut hasher, v));
+            hasher.finalize_reset().into_bytes()
+        });
+        out
     }
 }
 
@@ -675,9 +790,23 @@ impl<'a,M: Mac + KeyInit + FixedOutputReset + Clone> KdfFixed for Ktf1<M>
 where <M as digest::OutputSizeUser>::OutputSize: hybrid_array::ArraySize
 {
     type OutputSize = M::OutputSize;
+    
+    fn derive_self_secrets_others_fixed<'c,'d> ( &self, secret: impl IntoIterator<Item=&'c[u8]> + Clone, other_data: impl IntoIterator<Item=&'d[u8]> + Clone) -> Array<u8, Self::OutputSize> {
+        let mut maccer = self.maccer.clone();
+        
+        other_data.into_iter().for_each(|v|{ Mac::update(&mut maccer, v); println!("other={:02X?}", v)});
+        secret.into_iter().for_each(|v|{Mac::update(&mut maccer, v); println!("secret={:02X?}", v)});
+        
+        maccer.finalize_fixed()
+        // let result = maccer.finalize_reset();
+        // out.copy_from_slice(&result.as_bytes()[0..L::USIZE])
+    }
+
+    
+
 }
 
-impl<M: Mac + KeyInit + FixedOutputReset + Clone> Kdf for Ktf1<M> {
+impl<M: Mac + KeyInit + FixedOutputReset + Clone> KdfSlice for Ktf1<M> {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
         let mut maccer = self.maccer.clone();
         
@@ -700,6 +829,22 @@ impl<M: Mac + KeyInit + FixedOutputReset + Clone> Kdf for Ktf1<M> {
         }
         
         //Ok(())
+    }
+}
+
+impl<M: Mac + KeyInit + FixedOutputReset + Clone, L> KdfArray<L> for Ktf1<M> 
+    where L: ArraySize, // + IsEqual<M::OutputSize, Output=True>, //IsLessOrEqual<M::OutputSize, Output=True>,
+    M: Mac<OutputSize = L>
+{
+    fn derive_self_secrets_others_array<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+        let mut maccer = self.maccer.clone();
+        
+        other_data.into_iter().for_each(|v|{ Mac::update(&mut maccer, v); println!("other={:02X?}", v)});
+        secret.into_iter().for_each(|v|{Mac::update(&mut maccer, v); println!("secret={:02X?}", v)});
+        
+        maccer.finalize_fixed()
+        // let result = maccer.finalize_reset();
+        // out.copy_from_slice(&result.as_bytes()[0..L::USIZE])
     }
 }
 
@@ -775,9 +920,9 @@ where M:Mac + KeyInit + FixedOutputReset,
     }
 }
 
-impl<'c, M, I> Kdf for Kpf1<M, I>
+impl<'c, M, I> KdfSlice for Kpf1<M, I>
 where M:Mac + KeyInit + FixedOutputReset,
-    I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero,
+    I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero + WrappingAdd + Eq,
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
         self.derive_self_secret_others_into( &iter_to_vec(secret), other_data, out)
@@ -804,6 +949,32 @@ where M:Mac + KeyInit + FixedOutputReset,
             Mac::update ( &mut maccer, counter.to_be_bytes().as_ref() );
             maccer.finalize_reset().into_bytes()
         });
+    }
+
+    
+}
+
+impl<'c, M, I,L> KdfArray<L> for Kpf1<M, I>
+where M: Mac + KeyInit + FixedOutputReset,
+    I: Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero + WrappingAdd + Eq, // + BoundedTypeNum,
+    L: ArraySize, // + IsLessOrEqual<Prod<M::OutputSize, I::Max>, Output=True>,
+    //M::OutputSize: Mul<I::Max>,
+{
+    fn derive_self_secrets_others_array<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone ) -> Array<u8, L>{
+        let secret = iter_to_vec(secret);
+        let mut maccer = M::new_from_slice(&secret).unwrap(); // Could fail, but shouldn't
+        println !( "kpf1 secret={:02X?}", secret);
+        let mut out = Array::default();
+        
+        block_loop_infallible ( I::one(), &[], &mut out, |counter, prev_mac| {
+            Mac::update (&mut maccer, prev_mac);
+            Mac::update ( &mut maccer, &self.salt );
+            println! ( "kpf1 salt={:02X?}", self.salt);
+            other_data.clone().into_iter().for_each ( |v| { Mac::update ( &mut maccer, v); println!( "kpf1 other={:02X?}", v)});
+            Mac::update ( &mut maccer, counter.to_be_bytes().as_ref() );
+            maccer.finalize_reset().into_bytes()
+        });
+        out
     }
 
     
@@ -866,9 +1037,9 @@ where M:Mac + KeyInit,
     { Self{phantom: PhantomData, phantom2: PhantomData, phantom3: PhantomData}}
 }
 
-impl<M, I, O> Kdf for Kpf2<M, I, O>
+impl<M, I, O> KdfSlice for Kpf2<M, I, O>
 where M:Mac + KeyInit + FixedOutputReset,
-    I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero,
+    I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq,
     O:  Copy + From<u16> + ToBytes
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
@@ -893,6 +1064,29 @@ where M:Mac + KeyInit + FixedOutputReset,
             Mac::update(&mut macfunc, lb.as_ref());
             macfunc.finalize_reset().into_bytes()
         });
+    }
+}
+
+
+impl<M, I, O, L> KdfArray<L> for Kpf2<M, I, O>
+where M:Mac + KeyInit + FixedOutputReset,
+    I: Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq,
+    O: Copy + From<u16> + ToBytes,
+    L: ArraySize,
+{
+    fn derive_self_secrets_others_array<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+
+        let lb = O::from(L::U16 * 8).to_be_bytes();
+        let mut macfunc = <M as KeyInit>::new_from_slice(&iter_to_vec(secret)).unwrap();
+        let mut out = Array::default();
+            
+        block_loop_infallible ( I::one(), &[], &mut out, |counter, _| {
+            Mac::update(&mut macfunc, counter.to_be_bytes().as_ref());
+            other_data.clone().into_iter().for_each(|v|Mac::update(&mut macfunc, &v));
+            Mac::update(&mut macfunc, lb.as_ref());
+            macfunc.finalize_reset().into_bytes()
+        });
+        out
     }
 }
 
@@ -972,9 +1166,9 @@ where M:Mac + KeyInit + FixedOutputReset,
     }
 }
 
-impl<M, I, O> Kdf for Kpf3<M, I, O>
+impl<M, I, O> KdfSlice for Kpf3<M, I, O>
 where M:Mac + KeyInit + FixedOutputReset,
-    I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero,
+    I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq,
     O:  Copy + From<u16> + ToBytes
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
@@ -1060,9 +1254,9 @@ where M:Mac + KeyInit + FixedOutputReset,
 }
 
 
-impl<M, I, B> Kdf for Kpf4<M, I, B>
+impl<M, I, B> KdfSlice for Kpf4<M, I, B>
 where M:Mac + KeyInit + FixedOutputReset, 
-    I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero,
+    I:  Copy + AddAssign<I> + ToBytes + One + PartialEq + Zero  + WrappingAdd + Eq,
     B: From<usize> + ToBytes,
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
@@ -1110,17 +1304,15 @@ where M:Mac + KeyInit + FixedOutputReset,
 
 
 #[derive(Clone)]
-pub struct Tkdf <KX: InitSalt + KdfFixed, KP: Kdf + Default>
+pub struct Tkdf <KX: InitSalt + KdfFixed, KP: KdfSlice + Default>
 {
-    phantom: std::marker::PhantomData<KX>,
-    phantom2: std::marker::PhantomData<KP>,
     extract: KX,
     expand: KP,
     //expand_others: Vec<u8>
 }
 impl <KX, KP > TwoStepKdf for Tkdf<KX, KP>
 where KX: InitSalt + KdfFixed + Default,
-    KP: Kdf + Default,
+    KP: KdfSlice + Default,
 {
     type Extract = KX;
     type Expand = KP;
@@ -1128,71 +1320,83 @@ where KX: InitSalt + KdfFixed + Default,
 
 impl <'a, KX, KP > Default for Tkdf<KX, KP>
 where KX: InitSalt + KdfFixed + Default,
-    KP: Kdf +  Default,
+    KP: KdfSlice +  Default,
 {
     fn default () -> Self {
-        return Self{phantom: PhantomData, phantom2: PhantomData, extract: KX::default(), expand: KP::default()}
+        return Self{extract: KX::default(), expand: KP::default()}
     }
 }
 
 impl <KX, KP > InitSalt for Tkdf<KX, KP>
 where KX: KdfFixed + Default + InitSalt,
-    KP: Kdf +  Default,
+    KP: KdfSlice +  Default,
 {
     fn new_with_salt ( salt: &[u8] ) -> Self {
-        return Self{phantom: PhantomData, phantom2: PhantomData, extract: KX::new_with_salt(salt), expand: KP::default()}
+        return Self{extract: KX::new_with_salt(salt), expand: KP::default()}
     }
 }
 impl <KX, KP > Tkdf<KX, KP>
 where KX: KdfFixed + Default + InitSalt,
-    KP: Kdf +  Default + InitSalt,
+    KP: KdfSlice +  Default + InitSalt,
 {
     pub fn new_with_add_info ( salt: &[u8] ) -> Self {
-        return Self{phantom: PhantomData, phantom2: PhantomData, extract: KX::default(), expand: KP::new_with_salt(salt)}
+        return Self{extract: KX::default(), expand: KP::new_with_salt(salt)}
     }
 }
 
-impl <KX, KP > Kdf for Tkdf<KX, KP>
-where KX: InitSalt + KdfFixed + Default, //KdfWithSalt,
-    KP: Kdf + Default,
+impl <KX, KP > KdfSlice for Tkdf<KX, KP>
+where KX: InitSalt + KdfFixed + Default, // + Kdf2<<KX as KdfFixed>::OutputSize>, //KdfWithSalt,
+    KP: KdfSlice + Default,
     <KX as KdfFixed>::OutputSize: ArraySize
 {
     fn derive_self_secrets_others_into<'a,'b> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
-        let km = self.extract.derive_self_secrets_others::<KX::OutputSize>(secrets, None)?;
+        let km = self.extract.derive_self_secrets_others_fixed(secrets, None);
 
         return self.expand.derive_self_secret_others_into ( &km, other_data, out);
     }
 }
 
-impl <KX: InitSalt + KdfFixed, KP: Default + Kdf> GetExtract for Tkdf<KX, KP>
+impl <KX, KP, L> KdfArray<L> for Tkdf<KX, KP>
+where KX: InitSalt + KdfFixed + Default, // + Kdf2<<KX as KdfFixed>::OutputSize>, //KdfWithSalt,
+    KP: KdfSlice + Default + KdfArray<L>,
+    <KX as KdfFixed>::OutputSize: ArraySize,
+    L: ArraySize,
 {
-    type T = KX;
-    fn get_extract(&self) -> &Self::T {
-        &self.extract
-    }
-}
-impl <KX: InitSalt + KdfFixed, KP: Default + Kdf> GetExpand for Tkdf<KX, KP>
-{
-    type T = KP;
-    fn get_expand(&self) -> &Self::T {
-        &self.expand
+    fn derive_self_secrets_others_array<'a,'b> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8,L> {
+        let km = self.extract.derive_self_secrets_others_fixed(secrets, None);
+        self.expand.derive_self_secrets_others_array(std::iter::once(km.as_slice()), other_data)
     }
 }
 
-impl<KX,KP> KdfLabelled for Tkdf<KX, KP>
-where KX: KdfLabelled + InitSalt + KdfFixed + Default,
-    KP: KdfLabelled + Default,
-    <KX as KdfFixed>::OutputSize: ArraySize
-{
-    fn new_with_label<L: Label>() -> Self {
-        Self{expand: KP::new_with_label::<L>(), extract: KX::new_with_label::<L>(), phantom: PhantomData, phantom2: PhantomData}
-    }    
-    fn derive_self_secrets_label_others_into<'a, 'b, 'c> ( &self, _secrets: impl IntoIterator<Item=&'a[u8]> + Clone, _label: &'b[u8], _others: impl IntoIterator<Item=&'c[u8]> + Clone, _out: &mut[u8]) -> Result<(),Error> {
-        todo!()// let km = self.extract.derive_self_secrets_label_others::<KX::OutputSize>(secrets, &[], others)?;
-        // self.expand.derive_self_secrets_label_others_into ( once(km.as_slice()), &[], None, out)
-    }
+// impl <KX: InitSalt + KdfFixed, KP: Default + KdfSlice> GetExtract for Tkdf<KX, KP>
+// {
+//     type T = KX;
+//     fn get_extract(&self) -> &Self::T {
+//         &self.extract
+//     }
+// }
+// impl <KX: InitSalt + KdfFixed, KP: Default + KdfSlice> GetExpand for Tkdf<KX, KP>
+// {
+//     type T = KP;
+//     fn get_expand(&self) -> &Self::T {
+//         &self.expand
+//     }
+// }
+
+// impl<KX,KP> KdfLabelled for Tkdf<KX, KP>
+// where KX: KdfLabelled + InitSalt + KdfFixed + Default , //+ Kdf2<<KX as KdfFixed>::OutputSize>,
+//     KP: KdfLabelled + Default,
+//     <KX as KdfFixed>::OutputSize: ArraySize
+// {
+//     fn new_with_label<L: Label>() -> Self {
+//         Self{expand: KP::new_with_label::<L>(), extract: KX::new_with_label::<L>()}
+//     }    
+//     fn derive_self_secrets_label_others_into<'a, 'b, 'c> ( &self, _secrets: impl IntoIterator<Item=&'a[u8]> + Clone, _label: &'b[u8], _others: impl IntoIterator<Item=&'c[u8]> + Clone, _out: &mut[u8]) -> Result<(),Error> {
+//         todo!()// let km = self.extract.derive_self_secrets_label_others::<KX::OutputSize>(secrets, &[], others)?;
+//         // self.expand.derive_self_secrets_label_others_into ( once(km.as_slice()), &[], None, out)
+//     }
     
-}
+// }
 
 
 ///

@@ -6,7 +6,9 @@ use digest::consts::*;
 use hex_literal::hex;
 use hmac::HmacReset;
 use hybrid_array::Array;
-use kdfs::{Kdf, InitSalt, iso18033_2, u0};
+use hybrid_array::sizes::{U7237, U8516};
+use kdfs::Error::InvalidBufferSize;
+use kdfs::{InitSalt, KdfSlice, KdfArray, iso18033_2, u0};
 
 use kdfs::ansi_x9_42::X942Asn1Kdf;
 use kdfs::ansi_x9_63::{X963KdfSha1,X963KdfSha256};
@@ -263,14 +265,14 @@ fn test_okdf1 () {
     let salt = [0xBEu8; 16];
     let derived_key = [0xEBu8,0xB0,0x66,0xC7,0x05,0x8F,0x1F,0xE4,0xD2,0x72,0xE2,0xE5,0x32,0x36,0x32,0x2A,0x53,0x0C,0x0D,0x23,0x81,0x72,0x74,0xC2,0x8F,0x94,0x26,0xF4,0x76,0x10,0x1C,0xAC];
     
-    let result = Okdf1::<Sha256>::derive_secret_other::<U32>(&secret, &salt).unwrap();
+    let result = Okdf1::<Sha256>::derive_secret_other_array(&secret, &salt);
     assert! ( result == derived_key);
 
     // From NIST SHA Test vectors
     let secret2 = hex!("fe1f0fb02c9011f4c8c5905934ed15136771737ce31c5859e67f235fe594f5f6");
     let exp_derived_key = hex!("bbeaacc632c2a3db2a9b47f157ab54aa27776c6e74cf0bcaa91b06d5");
 
-    let result2 = Okdf1::<Sha224>::derive_secret_other::<U28>(&secret2, &[]).unwrap();
+    let result2 = Okdf1::<Sha224>::derive_secret_other_array(&secret2, &[]);
     assert! ( result2 == exp_derived_key);
 
     // From NIST SHA Test vectors
@@ -278,7 +280,7 @@ fn test_okdf1 () {
     let salt3 = hex!("a650547208251f6d4237e661c7bf4c77f335390394c37fa1a9f9be836ac28509");
     let exp_derived_key3 = hex!("42e61e174fbb3897d6dd6cef3dd2802fe67b331953b06114a65c772859dfc1aa");
 
-    let result3 = Okdf1::<Sha256>::derive_secret_other::<U32>(&secret3, &salt3).unwrap();
+    let result3 = Okdf1::<Sha256>::derive_secret_other_array(&secret3, &salt3);
     assert! ( result3 == exp_derived_key3);
 }
 
@@ -1141,7 +1143,7 @@ fn test_apple_x963_kdf()
     let input = hex!("aa453db21f99ab4657b35a1aabf102e6625e83c9b157fe735ab1cc68ea7a8434");
     let output = hex!( "0cb0519cd4bd777362cf614127a08b7a89c0e1d5ada8fbb8027a8b08eb161368");
 
-    let output_calc =  X963KdfSha256::derive_secret_other::<U32>(&input, &[]).unwrap();
+    let output_calc: Array<u8, U32> =  X963KdfSha256::derive_secret_other_array(&input, &[]);
 
     assert! ( output_calc == output);
 
@@ -1163,7 +1165,7 @@ fn test_apple_hkdf_kdf()
     let shared_info = hex!("11223344");
     let output = hex!( "ebddb279f785c34d8cb5ab78f6147c4268d21633a4abd2cdfbe6ba20e5580983");
 
-    let output_calc = Hkdf::<Sha256>::derive_secret_salt_other::<U32>(&input, &salt, &shared_info).unwrap();
+    let output_calc: Array<u8, U32> = Hkdf::<Sha256>::derive_secret_salt_other_array(&input, &salt, &shared_info);
 
     assert! ( output_calc == output);
 
@@ -1189,7 +1191,7 @@ fn test_kmac_128_kdf_a_1_1 ()
     let output = hex!("3a8d2a5ead5cd4db448b76a241b078fb444e1faf36eef8e195e275778a169b5f");
 
     let kdf = Kmac128Kdf::new(customization);
-    let output2: Array<u8, U32> = kdf.derive_self_secret_other(&key, &input).unwrap();
+    let output2: Array<u8, U32> = kdf.derive_self_secret_other_array(&key, &input);
 
     assert_eq!(output2, output)
 
@@ -1216,7 +1218,7 @@ fn test_kmac_256_kdf_a_1_2 ()
     let output = hex!("9ee1b694eee215b097a71000260a494b22a1d583943b6052281efb16e9481c626ff8ef3aca47e8b290c12801694775d15b2d9fede16639c5fab05d0f12c7b112");
 
     let kdf = Kmac256Kdf::new(customization);
-    let output2: Array<u8, U64> = kdf.derive_self_secret_other(&key, &input).unwrap();
+    let output2: Array<u8, U64> = kdf.derive_self_secret_other_array(&key, &input);
 
     assert_eq!(output2, output)
 
@@ -1242,18 +1244,18 @@ fn test_kmac_128_kdf_a_2_1 ()
     let output = hex!("067b024ab617ab96ed323faa0992d5b2b469dd2f2bde323a4d5a487eb9d7efc7");
 
     let kdf = Kmac128Kdf::new(customization);
-    let output2: Array<u8, U32> = kdf.derive_self_secret_other(&key, &input).unwrap();
+    let output2: Array<u8, U32> = kdf.derive_self_secret_other_array(&key, &input);
 
     assert_eq!(output2, output);
 
     let output3 = hex!("918fcc9584938feadca44878aff97466df6de641863bfa2ff92e8d4f28109195316a4786d33a7a3e7de2cf483d9750f0d5f1f2551b59992a621d44850fb4b730");
-    let output4 :Array<u8, U64> = kdf.derive_self_secret_other(&key, &input).unwrap();
+    let output4 :Array<u8, U64> = kdf.derive_self_secret_other_array(&key, &input);
     assert_eq!(output4, output3);
 
     let input2 = hex!("fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1d0");
 
     let output5 = hex!("ce8b6b34301ce350bd04c3a85325ec33e38eafca744abea32ca5fc4196e6db8a9df414304023b3678157ec287f89e3eff15796c8cb82ef55f32b953382aa1808e971a62d3475dad6c00572a3ccd90b82907a6db4e63bfe248e22e8d770c5a08f1543d7a869a6b274ed953beeefcf4a1eaac71b3791278136122ee7f7cfc79145eaf25d1875ef6d8d5761aa3cd487a95b8126758621c4b6f8ab6a4eb0e1b460bf91abd802943a86ba");
-    let output6 :Array<u8, U168> = kdf.derive_self_secret_other(&key, &input2).unwrap();
+    let output6 :Array<u8, U168> = kdf.derive_self_secret_other_array(&key, &input2);
     assert_eq!(output6, output5);
 
 }
@@ -1278,8 +1280,85 @@ fn test_kmac_128_kdf_a_3_1 ()
     let output = hex!("1a3d6e9421bf83653d7e876479be427a");
 
     let kdf = Kmac128Kdf::new(customization);
-    let output2: Array<u8, U16> = kdf.derive_self_secret_other(&key, &input).unwrap();
+    let output2: Array<u8, U16> = kdf.derive_self_secret_other_array(&key, &input);
 
     assert_eq!(output2, output)
+
+}
+
+
+
+#[test]
+fn test_too_long ()
+{
+    //Key (hex):
+    let key = hex!("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+
+    //Input (hex):
+    let input = hex!("fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0");
+
+    let kdf = Okdf3::<Sha256, u8>::default();
+    
+    //let output2: Array<u8, U8516> = kdf.derive_self_secret_other(&key, &input).unwrap();
+    assert_eq! ( kdf.derive_self_secret_other::<U8516>(&key, &input).is_err(), true);
+
+    //let mut res = Array::<u8, U7237>::default(); // Should compile, 255 * 32 bytes = 8160 bytes
+    //let mut res = Array::<u8, U8516>::default(); // Shouldn't compile, u8 will wrap around
+    //let mut res = Array::<u8, U63>::default();
+
+    // Once compiled, cannot fail
+    let res: Array<u8, U7237> = kdfs::KdfArray::derive_self_secrets_others_array(&kdf, std::iter::once(key.as_slice()), std::iter::once(input.as_slice()));
+} 
+
+
+#[test]
+fn test_too_long_2 ()
+{
+    //Key (hex):
+    let key = hex!("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+
+    //Input (hex):
+    let input = hex!("fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0");
+
+    let kdf = Okdf3::<Sha256, u32>::default();
+    
+    //let mut res = Array::<u8, U7237>::default(); // Should compile, 255 * 32 bytes = 8160 bytes
+    //let mut res = Array::<u8, U8516>::default(); // Should compile, u32 has a huge space
+    //let mut res = Array::<u8, U63>::default();
+
+    let res : Array<u8, U8516> = kdfs::KdfArray::derive_self_secrets_others_array(&kdf, std::iter::once(key.as_slice()), std::iter::once(input.as_slice()));
+}
+
+#[test]
+fn test_too_long_3 ()
+{
+    //Key (hex):
+    let key = hex!("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+
+    //Input (hex):
+    let input = hex!("fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0");
+
+    let kdf = Okdf3::<Sha256, u0>::default();
+    
+    //let mut res = Array::<u8, U31>::default(); // Should compile
+    //let mut res = Array::<u8, U32>::default(); // Should compile
+    //let mut res = Array::<u8, U33>::default(); // Shouldn't compile
+
+    let res: Array<u8, U32> = kdfs::KdfArray::derive_self_secrets_others_array(&kdf, std::iter::once(key.as_slice()), std::iter::once(input.as_slice()));
+}
+
+#[test]
+fn test_tkdf ()
+{
+    let kdf = Tkdf1::<HmacReset<Sha256>, u32>::default();
+
+    let r: Array<u8, U64> = kdf.derive_self_secret_other ( &[1u8; 32], b"Hello World").unwrap();
+
+    let r: Array<u8, U64> = Kpf1::<HmacReset<Sha256>, u32>::default().derive_self_secret_other_array(&[1u8; 32], b"hello World");
+
+    let r= KdfArray::<U64>::derive_self_secret_other_array(&kdf, &[1u8; 32], b"Hello World");
+
+
+
 
 }

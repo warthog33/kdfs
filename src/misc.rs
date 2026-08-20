@@ -6,8 +6,9 @@ use aead::consts::*;
 #[cfg(feature="rustcrypto-cshake")]
 use cshake::{CShake128, CShake256};
 
-#[cfg(feature="rustcrypto-salsa20")]
+//#[cfg(feature="rustcrypto-salsa20")]
 use crate::KdfFixed;
+use crate::iso11770_6::block_loop_infallible;
 
 // #[cfg(feature="rustcrypto-salsa20")]
 // use digest::Update;
@@ -20,10 +21,10 @@ use hybrid_array::typenum::Unsigned;
 #[cfg(feature="rustcrypto-cshake")]
 use shake::{Shake128, Shake256}; //, CShake128, CShake256 };
 
-use crate::{iso11770_6::{block_loop, iter_to_generic_array, Okdf1}, InitSalt, Kdf};
+use crate::{iso11770_6::{block_loop, iter_to_generic_array, Okdf1}, InitSalt, KdfSlice};
 
 
-use crate::{Error};
+use crate::{Error, KdfArray};
 
 ///
 /// Kdf based upon a stream cipher as used by SRTP.
@@ -76,7 +77,7 @@ where <S as cipher::IvSizeUser>::IvSize: hybrid_array::ArraySize
     }
 }
 
-impl <S: StreamCipher + KeyIvInit> Kdf for StreamCipherKdf<S> 
+impl <S: StreamCipher + KeyIvInit> KdfSlice for StreamCipherKdf<S> 
 where <S as cipher::IvSizeUser>::IvSize: hybrid_array::ArraySize
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error> {
@@ -131,11 +132,11 @@ where <H as OutputSizeUser>::OutputSize: ArraySize
         let mut result = Vec::<u8>::new();
         while result.len() < L::USIZE {
             let hash_output = if result.len() == 0 {
-                Okdf1::<H>::derive_secret_others::<H::OutputSize>(key, [xgd_hash, &[key_type], session_id])
+                <Okdf1::<H> as KdfFixed>::derive_secret_others_fixed(key, [xgd_hash, &[key_type], session_id])
             } else {
-                Okdf1::<H>::derive_secret_others::<H::OutputSize>(key, [xgd_hash, &result])
+                <Okdf1::<H> as KdfFixed>::derive_secret_others_fixed(key, [xgd_hash, &result])
             };
-            result.extend(hash_output?);
+            result.extend(hash_output);
         }
         result.truncate(L::USIZE);
         //return GenericArray::<u8,L>::from_slice(&result).clone();
@@ -166,7 +167,7 @@ impl<E:BlockSizeUser + KeyInit> Default for EmvCommonSessionKdf<E> {
 }
 
 
-impl<E:BlockSizeUser + BlockCipherEncrypt + KeyInit> Kdf for EmvCommonSessionKdf<E> {
+impl<E:BlockSizeUser + BlockCipherEncrypt + KeyInit> KdfSlice for EmvCommonSessionKdf<E> {
     
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error>  {
 
@@ -190,7 +191,28 @@ impl<E:BlockSizeUser + BlockCipherEncrypt + KeyInit> Kdf for EmvCommonSessionKdf
     }
 }
 
-
+impl<E:BlockSizeUser + BlockCipherEncrypt + KeyInit, L: ArraySize> KdfArray<L> for EmvCommonSessionKdf<E> {
+    
+    fn derive_self_secrets_others_array<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone )-> Array<u8, L> {
+        let encryptor = E::new(&iter_to_generic_array(secret));
+        let derivation_data_block = iter_to_generic_array::<E::BlockSize> (other_data);
+        let mut out = Array::default();
+        
+        block_loop_infallible(0, &[], &mut out, |counter,_|{
+            let mut block = derivation_data_block.clone();
+            if L::USIZE > E::BlockSize::USIZE { // Multiple blocks needed
+                block[2] = match counter {
+                    0 => 0xF0,
+                    1 => 0x0F,
+                    _ => panic! ( "unsupported output length")
+                };
+            }
+            encryptor.encrypt_block(&mut block);
+            block
+        });
+        out
+    }
+}
 ///
 /// Options for byte 1 of the derivation data as used to derive different session keys in EMV Book 3
 /// 
@@ -231,20 +253,22 @@ impl Default for PassThroughKdf {
     }
 }
 
-impl Kdf for PassThroughKdf {
-    fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error>  {
+impl KdfSlice for PassThroughKdf {
+    fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, _other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error>  {
         let mut out_vec = Vec::new();
         secret.into_iter().for_each (|v| out_vec.extend(v));
-        other_data.into_iter().for_each (|v| out_vec.extend(v));
         out.copy_from_slice(&out_vec);
-        //let mut out = out;
-        // for v in secret.into_iter() {
-        //     out[..v.len()].copy_from_slice(v);
-        //     out = &mut out[v.len()..];
-        // }
-        //secret.into_iter().for_each (|v| {out[0..v.len()].copy_from_slice(v); out = &mut out[v.len()..]});
-
+        
         Ok(())
+    }
+}
+
+impl<L: ArraySize> KdfArray<L> for PassThroughKdf {
+    fn derive_self_secrets_others_array<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, _other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L>
+    {
+        let mut out = Array::default();
+        secret.into_iter().for_each (|v| out.copy_from_slice(v));
+        out
     }
 }
 
@@ -269,11 +293,29 @@ impl<D: Digest> Default for CryptoBoxKdf<D> {
 #[cfg(feature="rustcrypto-salsa20")]
 impl<D: Digest> KdfFixed for CryptoBoxKdf<D> {
     type OutputSize = U56;
+    
+    fn derive_self_secrets_others_fixed<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, Self::OutputSize> {
+        let input = Array::<u8, U16>::default();
+        let secret2 = iter_to_generic_array::<U32>(secret);
+        let h = salsa20::hsalsa::<U10> ( &secret2, &input); // Returns 256 bits
+
+        let mut hasher = D::new();
+        other_data.into_iter().for_each(|v| hasher.update(v));
+
+        let hashed_other = hasher.finalize();
+        
+        let mut out = Array::default();
+        out[0..32].copy_from_slice(h.as_slice());
+        out[32..56].copy_from_slice(&hashed_other[0..24]);
+        out
+    }
+
+    
 }
 
 
 #[cfg(feature="rustcrypto-salsa20")]
-impl<D: Digest> Kdf for CryptoBoxKdf<D> {
+impl<D: Digest> KdfSlice for CryptoBoxKdf<D> {
     fn derive_self_secrets_others_into<'c,'b> ( &self, secret: impl IntoIterator<Item=&'c[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error>
     {
         let input = Array::<u8, U16>::default();
@@ -291,11 +333,29 @@ impl<D: Digest> Kdf for CryptoBoxKdf<D> {
     }
 }
 
+#[cfg(feature="rustcrypto-salsa20")]
+impl<D: Digest> KdfArray<U56> for CryptoBoxKdf<D> {
+    fn derive_self_secrets_others_array<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, U56> {
+        let input = Array::<u8, U16>::default();
+        let secret2 = iter_to_generic_array::<U32>(secret);
+        let h = salsa20::hsalsa::<U10> ( &secret2, &input); // Returns 256 bits
+
+        let mut hasher = D::new();
+        other_data.into_iter().for_each(|v| hasher.update(v));
+
+        let hashed_other = hasher.finalize();
+        
+        let mut out = Array::default();
+        out[0..32].copy_from_slice(h.as_slice());
+        out[32..56].copy_from_slice(&hashed_other[0..24]);
+        out
+    }
+}
 
 
 
 /// Apply the KDF trait to any XOF function, works well with Shake128 and Shake256
-impl<X: ExtendableOutput + Default> Kdf for X
+impl<X: ExtendableOutput + Default> KdfSlice for X
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), crate::Error> {
         let mut hasher = X::default();
@@ -303,6 +363,17 @@ impl<X: ExtendableOutput + Default> Kdf for X
         other_data.into_iter().for_each(|v|{ println!("other={v:02X?}");hasher.update(v)});
         hasher.finalize_xof().read(out);
         Ok(())
+    }
+}
+impl<X: ExtendableOutput + Default,L: ArraySize> KdfArray<L> for X
+{
+    fn derive_self_secrets_others_array<'a,'b>( &self, secret: impl IntoIterator<Item=&'a[u8]>, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+        let mut hasher = X::default();
+        let mut out = Array::default();
+        secret.into_iter().for_each (|v|{ println!("secret={v:02X?}"); hasher.update(v)});
+        other_data.into_iter().for_each(|v|{ println!("other={v:02X?}");hasher.update(v)});
+        hasher.finalize_xof().read(&mut out);
+        out
     }
 }
 
@@ -318,7 +389,7 @@ impl<C> Default for CShakeKdf<C>
 }
 
 #[cfg(feature="rustcrypto-cshake")]
-impl<C> Kdf for CShakeKdf<C>
+impl<C> KdfSlice for CShakeKdf<C>
 where C: digest::CustomizedInit + ExtendableOutput
 {
     fn derive_self_secrets_others_into<'a,'b>( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), crate::Error> {
@@ -368,7 +439,7 @@ impl<'a> Default for Kmac128Kdf<'a>
         Self(&[])
     }
 }
-impl<'c> Kdf for Kmac128Kdf<'c>
+impl<'c> KdfSlice for Kmac128Kdf<'c>
 {
     fn derive_self_secrets_others_into<'a,'b>(&self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), crate::Error> {
         let secret: Vec<&[u8]> = secrets.into_iter().collect();
@@ -380,6 +451,17 @@ impl<'c> Kdf for Kmac128Kdf<'c>
         //let newX = bytepad(encode_string(K), 168) || X || right_encode(L);
         // return cShake128(newX, L, “KMAC”, S)
         //hasher. 
+    }
+}
+impl<'c,L: ArraySize> KdfArray<L> for Kmac128Kdf<'c>
+{
+    fn derive_self_secrets_others_array<'a,'b> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+        let secret: Vec<&[u8]> = secrets.into_iter().collect();
+        let mut out = Array::default();
+        let mut hasher = tiny_keccak::Kmac::v128(&secret.concat(), self.0);
+        other_data.into_iter().for_each (|v|tiny_keccak::Hasher::update(&mut hasher, v));
+        tiny_keccak::Hasher::finalize(hasher, &mut out);
+        out
     }
 }
 
@@ -396,7 +478,7 @@ impl<'a> Default for Kmac256Kdf<'a>
         Self(&[])
     }
 }
-impl<'c> Kdf for Kmac256Kdf<'c>
+impl<'c> KdfSlice for Kmac256Kdf<'c>
 {
     fn derive_self_secrets_others_into<'a,'b>(&self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), crate::Error> {
         let secret: Vec<&[u8]> = secrets.into_iter().collect();
@@ -410,7 +492,17 @@ impl<'c> Kdf for Kmac256Kdf<'c>
         //hasher. 
     }
 }
-
+impl<'c,L: ArraySize> KdfArray<L> for Kmac256Kdf<'c>
+{
+    fn derive_self_secrets_others_array<'a,'b> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
+        let secret: Vec<&[u8]> = secrets.into_iter().collect();
+        let mut out = Array::default();
+        let mut hasher = tiny_keccak::Kmac::v256(&secret.concat(), self.0);
+        other_data.into_iter().for_each (|v|tiny_keccak::Hasher::update(&mut hasher, v));
+        tiny_keccak::Hasher::finalize(hasher, &mut out);
+        out
+    }
+}
 
 
 ///

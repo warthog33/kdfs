@@ -1,26 +1,34 @@
 //pub mod hash_encrypt;
 
-use std::iter::once;
+//use std::iter::once;
 use std::ops::{Add, AddAssign, Mul};
 
 //use generic_array::{GenericArray, ArrayLength};
 pub extern crate hybrid_array;
+use aead::consts::{U0, U1, U255, U65535, U2147483647, U4294967295};
 use hybrid_array::{Array, ArraySize};
-use num_traits::{One, ToBytes, Zero};
+use num_traits::{One, ToBytes, WrappingAdd, Zero};
 
 //use digest::XofReader;
 
 pub trait InitSalt {
     fn new_with_salt ( salt: &[u8] ) -> Self;
 }
-pub trait GetExtract {
-    type T;
-    fn get_extract(&self) -> &Self::T;
+
+/// Trait representing a const label
+pub trait Label {
+    const LABEL: &'static[u8];
 }
-pub trait GetExpand {
-    type T;
-    fn get_expand(&self) -> &Self::T;
-}
+
+
+// pub trait GetExtract {
+//     type T;
+//     fn get_extract(&self) -> &Self::T;
+// }
+// pub trait GetExpand {
+//     type T;
+//     fn get_expand(&self) -> &Self::T;
+// }
   
 #[derive(Debug)]
 pub enum Error {
@@ -34,7 +42,7 @@ impl From<digest::InvalidLength> for Error {
     }
 }
 
-pub trait Kdf {
+pub trait KdfSlice {
     /// Derive function with support for multiple secrets and multiple other fields. Writes into a buffer
     fn derive_self_secrets_others_into<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), Error>;
 
@@ -46,7 +54,7 @@ pub trait Kdf {
     /// Derive function which accepts a single secret slice, and multiple other_data slices
     fn derive_self_secret_others_into<'a> (& self, secret: &[u8], other_data: impl IntoIterator<Item=&'a[u8]> + Clone, out: &mut [u8]) -> Result<(), Error>
     {
-        self.derive_self_secrets_others_into(once(secret), other_data, out)
+        self.derive_self_secrets_others_into(Some(secret), other_data, out)
     }
     /// Derive function with multiple secrets and a multiple other fields. Returns an Array
     fn derive_self_secrets_others<'a,'b,L: ArraySize> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Result<Array<u8,L>, Error> where Self: Sized
@@ -67,7 +75,7 @@ pub trait Kdf {
     fn derive_self_secret_other<L: ArraySize> ( &self, secret: &[u8], other_data: &[u8]) -> Result<Array<u8,L>, Error> 
         where Self: Sized/*where Self: OutputSizeUser + Sized*/ 
     {
-        self.derive_self_secret_others(secret, once(other_data))
+        self.derive_self_secret_others(secret, Some(other_data))
     }
     /// Derive function with support for multiple input secrets and a single other field. Returns an Array
     fn derive_self_secrets_other<'a,L: ArraySize> (&self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, other: &[u8]) -> Array<u8,L> 
@@ -107,58 +115,121 @@ pub trait Kdf {
     fn derive_secret_salt_others<'a, L:ArraySize> ( secret: &[u8], salt: &[u8], other_data: impl IntoIterator<Item=&'a[u8]> + Clone) -> Result<Array<u8,L>, Error>
         where Self: Default + InitSalt 
     { 
-        Self::derive_secrets_salt_others(once(secret), salt, other_data)
+        Self::derive_secrets_salt_others(Some(secret), salt, other_data)
     }
     /// Derive function with support for a single secret, a salt and single other field. Returns an Array
     fn derive_secret_salt_other<'a, L: ArraySize> ( secret: &'a [u8], salt: &'a[u8], infos: &[u8]) -> Result<Array<u8, L>, Error> 
         where Self: Default + InitSalt 
     {
-       Self::derive_secret_salt_others(secret, salt, once(infos))
+       Self::derive_secret_salt_others(secret, salt, Some(infos))
     }
     /// Derive function with support for a single secrets and a salt. Returns an Array
     fn derive_salt_secret<'a, 'c: 'a, L:ArraySize>( salt: &'c[u8], secret: &'c[u8]) -> Result<Array<u8,L>, Error>
-        where Self: Kdf + Default + InitSalt 
+        where Self: KdfSlice + Default + InitSalt 
     {
-        <Self as Kdf>::derive_secret_salt_others(secret, salt, None)
+        <Self as KdfSlice>::derive_secret_salt_others(secret, salt, None)
     }
 }
 
+pub trait KdfArray<L: ArraySize> {
+    /// Derive function with support for multiple secrets and multiple other fields. Writes into a buffer
+    fn derive_self_secrets_others_array<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L>;
 
+    fn derive_secrets_others_array<'a,'b> ( secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone ) -> Array<u8, L>
+    where Self: Default
+    {
+        Self::default().derive_self_secrets_others_array(secret, other_data)
+    }
+    fn derive_secret_others_array<'a,'b> ( secret: &'a[u8], other_data: impl IntoIterator<Item=&'b[u8]> + Clone ) -> Array<u8, L>
+    where Self: Default
+    {
+        Self::derive_secrets_others_array(Some(secret), other_data)
+    }
+    fn derive_secret_other_array<'a,'b> ( secret: &'a[u8], other_data: &'b[u8] ) -> Array<u8, L>
+    where Self: Default
+    {
+        Self::derive_secrets_others_array(Some(secret), Some(other_data))
+    }
+    fn derive_self_secrets_other_array<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: &'b[u8]) -> Array<u8, L>
+    {
+        self.derive_self_secrets_others_array(secret, Some(other_data))
+    }
+    fn derive_self_secret_others_array<'a,'b> ( &self, secret: &'a[u8], other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L>
+    {
+        self.derive_self_secrets_others_array(Some(secret), other_data)
+    }
+    fn derive_self_secret_other_array<'a,'b> ( &self, secret: &'a[u8], other_data: &'b[u8]) -> Array<u8, L>
+    {
+        self.derive_self_secrets_others_array(Some(secret), Some(other_data))
+    }
+    /// Derive function with support for multiple secrets, a salt and multiple other fields. Returns an Array
+    fn derive_secrets_salt_others_array<'a,'b> ( secrets: impl IntoIterator<Item=&'a[u8]> + Clone, salt: &[u8], other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8,L>
+        where Self: Default + InitSalt
+    { 
+        Self::derive_self_secrets_others_array(&Self::new_with_salt(salt), secrets, other_data)
+    }
+    fn derive_secret_salt_other_array<'a,'b> ( secret: &'a[u8], salt: &[u8], other_data: &'b[u8]) -> Array<u8,L>
+        where Self: Default + InitSalt
+    { 
+        Self::derive_self_secrets_others_array(&Self::new_with_salt(salt), Some(secret), Some(other_data))
+    }
+}
+
+// impl<T> KdfArray<T::OutputSize> for T
+// where T: KdfFixed 
+// {
+//     fn derive_self_secrets_others_into_array<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut Array<u8, T::OutputSize>) {
+//         *out = <Self as KdfFixed>::derive_self_secrets_others_fixed(&self, secret, other_data);
+//     }
+// }
 
 ///
 /// A KDF which has a nominal output size, important for two step KDFs as the size is used
 /// 
-pub trait KdfFixed: Kdf {
+//pub trait KdfFixed: Kdf2<Self::OutputSize> {
+pub trait KdfFixed {
     type OutputSize: ArraySize;
+
+    fn derive_self_secrets_others_fixed<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, Self::OutputSize>;
+
+    fn derive_secret_others_fixed<'a,'b> ( secret: &[u8], other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, Self::OutputSize>
+    where Self: Default,
+    {
+        Self::default().derive_self_secrets_others_fixed ( Some(secret), other_data)
+    }
+
+    fn derive_secrets_salt_others_fixed<'a,'b> ( secrets: impl IntoIterator<Item=&'a[u8]> + Clone, salt: &[u8], other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8,Self::OutputSize>
+        where Self: Default + InitSalt
+    { 
+        Self::derive_self_secrets_others_fixed(&Self::new_with_salt(salt), secrets, other_data)
+    }
 }
 
-/// Trait representing a const label
-pub trait Label {
-    const LABEL: &'static[u8];
-}
 
 
-pub trait KdfLabelled: Kdf {
-    fn new_with_label<L: Label>() -> Self; // 
-    //fn new_with_label ( label: &'static[u8]) -> Self;
 
-    fn derive_self_secret_label_other<'a, 'b, 'c, L:ArraySize> ( &self, secret: &'a[u8], label: &'b[u8], other: &'c[u8]) -> Result<Array<u8,L>,Error>
-    {
-        self.derive_self_secret_label_others (secret, label, once(other))
-    }
-    fn derive_self_secret_label_others<'a, 'b, 'c, L:ArraySize> ( &self, secret: &'a[u8], label: &'b[u8], others: impl IntoIterator<Item=&'c[u8]> + Clone) -> Result<Array<u8,L>,Error>
-    {
-        self.derive_self_secrets_label_others (once(secret), label, others)
-    }
-    fn derive_self_secrets_label_others<'a, 'b: 'a, 'c: 'a, L:ArraySize> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, label: &'b[u8], others: impl IntoIterator<Item=&'c[u8]> + Clone) -> Result<Array<u8,L>,Error>
-    {
-        let mut out = Array::<u8, L>::default();
-        self.derive_self_secrets_label_others_into(secrets, label, others,&mut out)?;
-        Ok(out)
-    }
-    fn derive_self_secrets_label_others_into<'a, 'b, 'c> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, label: &'b[u8], others: impl IntoIterator<Item=&'c[u8]> + Clone, out: &mut[u8]) -> Result<(),Error>;
 
-}
+// pub trait KdfLabelled: KdfSlice {
+//     fn new_with_label<L: Label>() -> Self; // 
+//     //fn new_with_label ( label: &'static[u8]) -> Self;
+
+//     fn derive_self_secret_label_other<'a, 'b, 'c, L:ArraySize> ( &self, secret: &'a[u8], label: &'b[u8], other: &'c[u8]) -> Result<Array<u8,L>,Error>
+//     {
+//         self.derive_self_secret_label_others (secret, label, Some(other))
+//     }
+//     fn derive_self_secret_label_others<'a, 'b, 'c, L:ArraySize> ( &self, secret: &'a[u8], label: &'b[u8], others: impl IntoIterator<Item=&'c[u8]> + Clone) -> Result<Array<u8,L>,Error>
+//     {
+//         self.derive_self_secrets_label_others (Some(secret), label, others)
+//     }
+//     fn derive_self_secrets_label_others<'a, 'b: 'a, 'c: 'a, L:ArraySize> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, label: &'b[u8], others: impl IntoIterator<Item=&'c[u8]> + Clone) -> Result<Array<u8,L>,Error>
+//     {
+//         let mut out = Array::<u8, L>::default();
+//         self.derive_self_secrets_label_others_into(secrets, label, others,&mut out)?;
+//         Ok(out)
+//     }
+//     fn derive_self_secrets_label_others_into<'a, 'b, 'c> ( &self, secrets: impl IntoIterator<Item=&'a[u8]> + Clone, label: &'b[u8], others: impl IntoIterator<Item=&'c[u8]> + Clone, out: &mut[u8]) -> Result<(),Error>;
+
+// }
 
 ///
 /// A trait representing a KDF which is composed to two individual KDFs
@@ -172,7 +243,7 @@ pub trait TwoStepKdf
     /// The expand step takes as an input the output from the extract stage and produces an output of
     /// any desired length. Diversification inputs are necessary to ensure different keys/secrets created
     /// from the same extracted value are different
-    type Expand: Kdf + Default;
+    type Expand: KdfSlice + Default;
 }
 
 
@@ -406,12 +477,47 @@ impl PartialEq for u0 {
         return false;
     }
 }
+impl Eq for u0 {
+}
+
+impl WrappingAdd for u0 {
+    fn wrapping_add(&self, _v: &Self) -> Self {
+        u0()
+    }
+}
 
 
 
 
+pub trait BoundedTypeNum
+{
+    type Min;
+    type Max;
+}
+impl BoundedTypeNum for u0 {
+    type Min = U0;
+    type Max = U1;
+}
 
+impl BoundedTypeNum for u8 {
+    type Min = U0;
+    type Max = U255;
+}
 
+impl BoundedTypeNum for u16 {
+    type Min = U0;
+    type Max = U65535;
+}
+
+impl BoundedTypeNum for u32 {
+    type Min = U0;
+    type Max = U4294967295; // 0xFFFFFFFF
+}
+
+impl BoundedTypeNum for i32 {
+    type Min = U0;
+    type Max = U2147483647;
+}
 
 
 
